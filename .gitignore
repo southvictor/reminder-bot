@@ -1,0 +1,6 @@
+/target
+/backups
+data
+.DS_Store
+commands
+local.env
