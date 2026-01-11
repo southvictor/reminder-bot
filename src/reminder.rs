@@ -6,8 +6,13 @@ use memory_db::DB;
 use memory_db::save_db;
 use memory_db::DBError;
 use uuid::Uuid;
+use std::env;
 
-pub const DB_LOCATION: &str = "./data";
+// Returns the directory where DB + backups live.
+// Defaults to a relative ".reminderbot" directory.
+pub fn get_db_location() -> String {
+    env::var("DB_LOCATION").unwrap_or("./data".to_string())
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Reminder {
@@ -51,5 +56,5 @@ pub async fn create_reminder(
             channel: channel.to_string(),
         },
     );
-    save_db(DB_LOCATION, db)
+    save_db(&get_db_location(), db)
 }

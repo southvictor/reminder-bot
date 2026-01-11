@@ -15,7 +15,7 @@ const DEFAULT_RUN_MODE: &str = "cli";
 
 #[tokio::main]
 async fn main() {
-    let db: DB<reminder::Reminder> = load_db(reminder::DB_LOCATION).expect("Unable to load database.");
+    let db: DB<reminder::Reminder> = load_db(&reminder::get_db_location()).expect("Unable to load database.");
     let shared_db = Arc::new(tokio::sync::Mutex::new(db));
     let run_mode = env::var("RUN_MODE").unwrap_or(DEFAULT_RUN_MODE.to_string());
     if run_mode == "api" {

@@ -5,7 +5,7 @@ use std::time::Duration;
 use std::sync::Arc;
 
 use memory_db::{DB, save_db};
-use crate::reminder::{Reminder, DB_LOCATION};
+use crate::reminder::{Reminder, get_db_location};
 use serenity::http::Http;
 use serenity::model::id::ChannelId;
 use tokio::sync::Mutex;
@@ -37,7 +37,7 @@ pub async fn run_notification_loop(
             println!("No more notifications for {}. expiring", reminder_id);
             db.remove(reminder_id.as_str());
         }
-        match save_db(DB_LOCATION, &db) {
+        match save_db(&&get_db_location(), &db) {
             Ok(_) => println!("Finished running notification loop."),
             Err(_) => println!("Failed to save state after running notification loop."),
         }
