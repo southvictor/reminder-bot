@@ -84,7 +84,11 @@ async fn send_message(
     .await;
 
     let message_body = match text_result {
-        Ok(body) => body,
+        Ok(body) => format!(
+            "{}\n{}",
+            notifications.join(", "),
+            body
+        ),
         Err(err) => {
             eprintln!(
                 "Failed to generate natural language notification, falling back. Error: {}",
