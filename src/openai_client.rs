@@ -54,12 +54,33 @@ pub async fn generate_openai_prompt(
              - If the user gives an explicit date like \"December 6th\", use that exact month and day at noon in the local timezone; do NOT change them.\n\
              - If the year is omitted, assume the next occurrence of that date on or after the current date.\n\
              - If the user gives a relative time (e.g. \"in two weeks\", \"tomorrow at 3pm\"), compute the concrete datetime from the current date/time.\n\
+             - For day-of-week phrases:\n\
+               - \"Saturday\" or \"this Saturday\" means the next occurrence of that weekday on or after today.\n\
+               - \"next Saturday\" means the occurrence in the following week (at least 7 days after today), not the immediate upcoming one.\n\
              - If the time expression is unclear or missing (e.g. \"soon\", \"later\"), set the time to exactly 24 hours after the current datetime.\n\
+             - If the user includes corrections or clarifications (e.g. \"actually I meant this Saturday\"), treat them as time corrections only and DO NOT include them in \"content\".\n\
+             - If the message contains a \"Context notes\" or \"Additional context\" section, never copy that text into \"content\".\n\
              - Never invent or adjust the date away from what the user wrote; only add a year or time if needed.\n\
              - Output ONLY raw JSON, no prose, markdown, or code fences.\n\
              - The JSON shape must be exactly:\n\
              {{\"content\":\"<string>\",\"time\":\"<RFC3339 datetime>\"}}\n\
              User message: \"{user_prompt}\"",
+            now = now.to_rfc3339(),
+            user_prompt = prompt
+        ),
+        "notification_correction" => format!(
+            "You are a reminder correction engine.\n\
+             Current date and time (UTC): {now}\n\
+             User timezone: America/New_York\n\
+             Task: Given the original reminder request and a user-provided correction note, output a corrected reminder.\n\
+             Rules:\n\
+             - The correction note is NOT reminder content. It is only for fixing the date/time or clarifying intent.\n\
+             - Preserve the original reminder content unless the correction explicitly changes it.\n\
+             - If the correction only adjusts time (e.g. \"actually I meant this Saturday\"), update only the time.\n\
+             - Output ONLY raw JSON, no prose, markdown, or code fences.\n\
+             - The JSON shape must be exactly:\n\
+             {{\"content\":\"<string>\",\"time\":\"<RFC3339 datetime>\"}}\n\
+             Original request: \"{user_prompt}\"",
             now = now.to_rfc3339(),
             user_prompt = prompt
         ),
@@ -99,7 +120,7 @@ async fn query_openai(prompt: String, api_key: &str) -> Result<String, Box<dyn s
             },
         ],
         max_tokens: 1500,
-        temperature: 0.7,
+        temperature: 0.2,
     };
 
     let client = reqwest::Client::new();

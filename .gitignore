@@ -4,3 +4,4 @@ data
 .DS_Store
 commands
 local.env
+local.dev.env

@@ -3,12 +3,12 @@ mod cli;
 mod notification_loop;
 mod openai_client;
 mod handler;
+mod calendar_loop;
 
 use std::env;
 use std::sync::Arc;
 use memory_db::load_db;
 use memory_db::DB;
-use serenity::prelude::*;
 use serenity::model::gateway::GatewayIntents;
 
 const DEFAULT_RUN_MODE: &str = "cli";
