@@ -19,3 +19,11 @@ From a parent directory cloning reminderBot and memory_db
   docker cp "$CID":/usr/local/bin/reminderBot ./reminderBot-linux
   docker rm "$CID"
   ```
+
+Required Permissions for channel.
+- bot
+- applications.commands
+- Send messages
+- View Channels
+
+Set DISCORD_CLIENT_SECRET to the discord app's bot token.
