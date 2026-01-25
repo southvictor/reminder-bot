@@ -51,7 +51,7 @@ pub async fn generate_openai_prompt(
                - \"remind me to call mom at 5\" -> \"call mom\"\n\
              - \"time\": an RFC3339 datetime string in the user's timezone.\n\
              Rules:\n\
-             - If the user gives an explicit date like \"December 6th\", use that exact month and day; do NOT change them.\n\
+             - If the user gives an explicit date like \"December 6th\", use that exact month and day at noon in the local timezone; do NOT change them.\n\
              - If the year is omitted, assume the next occurrence of that date on or after the current date.\n\
              - If the user gives a relative time (e.g. \"in two weeks\", \"tomorrow at 3pm\"), compute the concrete datetime from the current date/time.\n\
              - If the time expression is unclear or missing (e.g. \"soon\", \"later\"), set the time to exactly 24 hours after the current datetime.\n\
