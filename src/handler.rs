@@ -1,5 +1,6 @@
-use crate::reminder;
-use crate::openai_client;
+use crate::models::reminder;
+use crate::service::openai_service::OpenAIService;
+use crate::service::reminder_service::ReminderService;
 use crate::notification_loop::run_notification_loop;
 use memory_db::DB;
 use serde::{Deserialize, Serialize};
@@ -121,13 +122,8 @@ impl BotHandler {
         }
 
         // Create reminder via OpenAI, then always go through pending confirmation.
-        let payload = match openai_client::generate_openai_prompt(
-            &text,
-            "notification",
-            &self.openai_api_key,
-        )
-        .await
-        {
+        let openai = OpenAIService::new(self.openai_api_key.as_ref().to_string());
+        let payload = match openai.generate_prompt(&text, "notification").await {
             Ok(p) => p,
             Err(err) => {
                 let msg = format!("Failed to call OpenAI for reminder: {}", err);
@@ -268,7 +264,7 @@ impl BotHandler {
         );
 
         let mut db = self.db.lock().await;
-        if let Err(e) = reminder::create_reminder(
+        if let Err(e) = ReminderService::create(
             &mut db,
             &final_content,
             &pending_item.user_id,
@@ -543,12 +539,10 @@ impl EventHandler for BotHandler {
                         }
                     }
 
-                    let refreshed = match openai_client::generate_openai_prompt(
-                        &combined_prompt,
-                        "notification_correction",
-                        &self.openai_api_key,
-                    )
-                    .await
+                    let openai = OpenAIService::new(self.openai_api_key.as_ref().to_string());
+                    let refreshed = match openai
+                        .generate_prompt(&combined_prompt, "notification_correction")
+                        .await
                     {
                         Ok(payload) => {
                             eprintln!("Correction OpenAI response: {}", payload);
