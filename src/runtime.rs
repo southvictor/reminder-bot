@@ -6,6 +6,7 @@ use tokio::sync::Mutex;
 
 use crate::handler;
 use crate::models::reminder::Reminder;
+use crate::tasks::calendar_loop;
 use crate::tasks::notification_loop;
 use crate::tasks::task_runner::TaskRunner;
 
@@ -27,6 +28,11 @@ pub async fn run_api(
                 notification_loop::run_notification_loop(db, secret, openai).await;
             });
         }
+    });
+    task_runner.add_task(|| {
+        tokio::spawn(async move {
+            calendar_loop::run_calendar_loop().await;
+        });
     });
     task_runner.start_all();
 

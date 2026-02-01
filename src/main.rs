@@ -2,7 +2,6 @@ mod models;
 mod cli;
 mod openai_client;
 mod handler;
-mod calendar_loop;
 mod service;
 mod runtime;
 mod tasks;

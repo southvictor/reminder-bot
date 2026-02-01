@@ -2,6 +2,10 @@
 
 use chrono;
 
+pub async fn run_calendar_loop() {
+    // TODO: Hook into real calendar client.
+}
+
 
 struct CalendarEvent {
     pub title: String,
