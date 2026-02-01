@@ -1,9 +1,8 @@
 use crate::models::reminder;
 use crate::service::openai_service::OpenAIService;
 use crate::service::reminder_service::ReminderService;
-use crate::notification_loop::run_notification_loop;
 use memory_db::DB;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serenity::prelude::*;
 use serenity::async_trait;
 use serenity::model::gateway::Ready;
@@ -32,14 +31,12 @@ pub struct ErrorMessage {
 
 pub struct BotHandler {
     db: Arc<Mutex<DB<reminder::Reminder>>>,
-    client_secret: Arc<String>,
     openai_api_key: Arc<String>,
     pending: Arc<Mutex<HashMap<String, PendingReminder>>>,
 }
 
 #[derive(Clone)]
 struct PendingReminder {
-    id: String,
     user_id: String,
     channel_id: String,
     content: String,
@@ -53,12 +50,10 @@ struct PendingReminder {
 impl BotHandler {
     pub fn new(
         db: Arc<Mutex<DB<reminder::Reminder>>>,
-        client_secret: Arc<String>,
         openai_api_key: Arc<String>,
     ) -> Self {
         BotHandler {
             db,
-            client_secret,
             openai_api_key,
             pending: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -163,7 +158,6 @@ impl BotHandler {
         let channel_id = command.channel_id.to_string();
         let pending_id = Uuid::new_v4().to_string();
         let pending_item = PendingReminder {
-            id: pending_id.clone(),
             user_id: user_id.clone(),
             channel_id: channel_id.clone(),
             content: ai_reminder.content,
@@ -439,12 +433,6 @@ impl EventHandler for BotHandler {
 
         let _ = Command::create_global_command(&ctx.http, builder).await;
 
-        let db_clone = self.db.clone();
-        let secret_clone = self.client_secret.clone();
-        let openai_clone = self.openai_api_key.clone();
-        tokio::spawn(async move {
-            run_notification_loop(db_clone, secret_clone, openai_clone).await;
-        });
     }
 
     async fn interaction_create(&self, ctx: Context, interaction: DiscordInteraction) {
@@ -657,42 +645,3 @@ impl EventHandler for BotHandler {
 }
 
 // Minimal Discord "interaction" types for application commands
-#[derive(Debug, Deserialize)]
-pub struct Interaction {
-    pub id: String,
-    pub application_id: String,
-    #[serde(rename = "type")]
-    pub kind: u8,
-    pub data: Option<ApplicationCommandData>,
-    pub guild_id: Option<String>,
-    pub channel_id: Option<String>,
-    pub member: Option<InteractionMember>,
-    pub user: Option<InteractionUser>, // present in DMs
-    pub token: String,
-    pub version: u8,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ApplicationCommandData {
-    pub name: String,
-    pub options: Option<Vec<ApplicationCommandDataOption>>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ApplicationCommandDataOption {
-    pub name: String,
-    #[serde(rename = "type")]
-    pub kind: u8,
-    pub value: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct InteractionMember {
-    pub user: InteractionUser,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct InteractionUser {
-    pub id: String,
-    pub username: String,
-}
