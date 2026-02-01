@@ -1,3 +1,5 @@
+use crate::events::queue::{Event, EventBus};
+use crate::service::reminder_service::{pending_buttons, render_pending_message, PendingReminder};
 use crate::models::reminder;
 use crate::service::openai_service::OpenAIService;
 use crate::service::reminder_service::ReminderService;
@@ -13,16 +15,14 @@ use serenity::builder::{
     CreateInteractionResponse,
     CreateInteractionResponseMessage,
     CreateActionRow,
-    CreateButton,
     CreateModal,
     CreateInputText,
 };
 use serenity::all::InputTextStyle;
-use chrono::{DateTime, Duration, Utc};
+use chrono::Utc;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use uuid::Uuid;
 
 #[derive(Debug, Serialize)]
 pub struct ErrorMessage {
@@ -33,62 +33,26 @@ pub struct BotHandler {
     db: Arc<Mutex<DB<reminder::Reminder>>>,
     openai_api_key: Arc<String>,
     pending: Arc<Mutex<HashMap<String, PendingReminder>>>,
-}
-
-#[derive(Clone)]
-struct PendingReminder {
-    user_id: String,
-    channel_id: String,
-    content: String,
-    time: DateTime<Utc>,
-    original_text: String,
-    extra_context: Option<String>,
-    expires_at: DateTime<Utc>,
-    message_id: Option<u64>,
+    event_bus: EventBus,
 }
 
 impl BotHandler {
     pub fn new(
         db: Arc<Mutex<DB<reminder::Reminder>>>,
         openai_api_key: Arc<String>,
+        event_bus: EventBus,
+        pending: Arc<Mutex<HashMap<String, PendingReminder>>>,
     ) -> Self {
         BotHandler {
             db,
             openai_api_key,
-            pending: Arc::new(Mutex::new(HashMap::new())),
+            pending,
+            event_bus,
         }
     }
 }
 
 impl BotHandler {
-    fn render_pending_message(pending: &PendingReminder) -> String {
-        let mut body: String = format!(
-            "Please confirm your reminder:\nContent: {}\nTime: {}",
-            pending.content,
-            pending.time
-        );
-        if let Some(ctx) = &pending.extra_context {
-            if !ctx.trim().is_empty() {
-                body.push_str(&format!("\nAdditional context: {}", ctx.trim()));
-            }
-        }
-        body
-    }
-
-    fn pending_buttons(pending_id: &str) -> CreateActionRow {
-        CreateActionRow::Buttons(vec![
-            CreateButton::new(format!("pending_confirm:{}", pending_id))
-                .label("Confirm date/time")
-                .style(serenity::all::ButtonStyle::Success),
-            CreateButton::new(format!("pending_context:{}", pending_id))
-                .label("Add context")
-                .style(serenity::all::ButtonStyle::Primary),
-            CreateButton::new(format!("pending_cancel:{}", pending_id))
-                .label("Cancel")
-                .style(serenity::all::ButtonStyle::Danger),
-        ])
-    }
-
     async fn handle_notify(&self, ctx: &Context, command: serenity::all::CommandInteraction) {
         let text = command
             .data
@@ -116,82 +80,26 @@ impl BotHandler {
             return;
         }
 
-        // Create reminder via OpenAI, then always go through pending confirmation.
-        let openai = OpenAIService::new(self.openai_api_key.as_ref().to_string());
-        let payload = match openai.generate_prompt(&text, "notification").await {
-            Ok(p) => p,
-            Err(err) => {
-                let msg = format!("Failed to call OpenAI for reminder: {}", err);
-                let _ = command
-                    .create_response(
-                        &ctx.http,
-                        CreateInteractionResponse::Message(
-                            CreateInteractionResponseMessage::new()
-                                .content(msg)
-                                .ephemeral(true),
-                        ),
-                    )
-                    .await;
-                return;
-            }
-        };
-
-        let ai_reminder: reminder::AIReminder = match serde_json::from_str(&payload) {
-            Ok(r) => r,
-            Err(e) => {
-                let msg = format!("Failed to parse reminder JSON: {}", e);
-                let _ = command
-                    .create_response(
-                        &ctx.http,
-                        CreateInteractionResponse::Message(
-                            CreateInteractionResponseMessage::new()
-                                .content(msg)
-                                .ephemeral(true),
-                        ),
-                    )
-                    .await;
-                return;
-            }
-        };
-
         let user_id = format!("@{}", command.user.id.to_string());
         let channel_id = command.channel_id.to_string();
-        let pending_id = Uuid::new_v4().to_string();
-        let pending_item = PendingReminder {
-            user_id: user_id.clone(),
-            channel_id: channel_id.clone(),
-            content: ai_reminder.content,
-            time: ai_reminder.time,
-            original_text: text.clone(),
-            extra_context: None,
-            expires_at: Utc::now() + Duration::minutes(5),
-            message_id: None,
-        };
-        let message_body = Self::render_pending_message(&pending_item);
-        let buttons = Self::pending_buttons(&pending_id);
-
-        {
-            let mut pending = self.pending.lock().await;
-            pending.insert(pending_id.clone(), pending_item);
-        }
-
+        self.event_bus
+            .emit(Event::NotifyRequested {
+                text: text.clone(),
+                user_id: user_id.clone(),
+                channel_id: channel_id.clone(),
+            })
+            .await;
         let _ = command
             .create_response(
                 &ctx.http,
                 CreateInteractionResponse::Message(
                     CreateInteractionResponseMessage::new()
-                        .content(message_body)
-                        .components(vec![buttons]),
+                        .content("Got it — processing your reminder.")
+                        .ephemeral(true),
                 ),
             )
             .await;
 
-        if let Ok(response) = command.get_response(&ctx.http).await {
-            let mut pending = self.pending.lock().await;
-            if let Some(entry) = pending.get_mut(&pending_id) {
-                entry.message_id = Some(response.id.get());
-            }
-        }
     }
 
     async fn handle_pending_confirm(
@@ -396,7 +304,7 @@ impl BotHandler {
         }
 
         let modal = CreateModal::new(
-            format!("pending_context_modal:{}", pending_id),
+            format!("reminder_context_modal:{}", pending_id),
             "Add context",
         )
         .components(vec![CreateActionRow::InputText(
@@ -449,13 +357,13 @@ impl EventHandler for BotHandler {
                 let custom_id = component.data.custom_id.clone();
                 if let Some((action, pending_id)) = custom_id.split_once(':') {
                     match action {
-                        "pending_confirm" => {
+                        "reminder_confirm" => {
                             self.handle_pending_confirm(&ctx, component, pending_id).await;
                         }
-                        "pending_cancel" => {
+                        "reminder_cancel" => {
                             self.handle_pending_cancel(&ctx, component, pending_id).await;
                         }
-                        "pending_context" => {
+                        "reminder_context" => {
                             self.handle_pending_context(&ctx, component, pending_id).await;
                         }
                         _ => {}
@@ -564,7 +472,7 @@ impl EventHandler for BotHandler {
                         pending_item.time
                     );
 
-                    let updated_message = Self::render_pending_message(&pending_item);
+                    let updated_message = render_pending_message(&pending_item);
                     if let Some(message) = &modal.message {
                         let _ = modal
                             .create_response(
@@ -572,7 +480,7 @@ impl EventHandler for BotHandler {
                                 CreateInteractionResponse::UpdateMessage(
                                     CreateInteractionResponseMessage::new()
                                         .content(updated_message)
-                                        .components(vec![Self::pending_buttons(pending_id)]),
+                                        .components(vec![pending_buttons(pending_id)]),
                                 ),
                             )
                             .await;
@@ -604,7 +512,7 @@ impl EventHandler for BotHandler {
                             &ctx.http,
                             serenity::builder::CreateMessage::new()
                                 .content(updated_message)
-                                .components(vec![Self::pending_buttons(pending_id)]),
+                                .components(vec![pending_buttons(pending_id)]),
                         )
                         .await
                     {

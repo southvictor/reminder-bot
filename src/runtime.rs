@@ -4,11 +4,15 @@ use memory_db::DB;
 use serenity::model::gateway::GatewayIntents;
 use tokio::sync::Mutex;
 
-use crate::handler;
+use crate::handlers::discord;
+use crate::service::reminder_service::PendingReminder;
+use std::collections::HashMap;
 use crate::models::reminder::Reminder;
 use crate::tasks::calendar_loop;
 use crate::tasks::notification_loop;
 use crate::tasks::task_runner::TaskRunner;
+use crate::events::queue::EventBus;
+use crate::events::worker::run_event_worker;
 
 pub async fn run_api(
     shared_db: Arc<Mutex<DB<Reminder>>>,
@@ -36,10 +40,25 @@ pub async fn run_api(
     });
     task_runner.start_all();
 
+    let pending: Arc<Mutex<HashMap<String, PendingReminder>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+    let (event_bus, event_rx) = EventBus::new(256);
+    let worker_openai = openai_api_key_arc.clone();
+    let worker_secret = discord_client_secret_arc.clone();
+    let worker_pending = pending.clone();
+    tokio::spawn(async move {
+        run_event_worker(event_rx, worker_openai, worker_secret, worker_pending).await;
+    });
+
     let token = discord_client_secret;
     let intents = GatewayIntents::GUILD_MESSAGES | GatewayIntents::DIRECT_MESSAGES;
     let mut client = serenity::Client::builder(token, intents)
-        .event_handler(handler::BotHandler::new(shared_db, openai_api_key_arc))
+        .event_handler(discord::BotHandler::new(
+            shared_db,
+            openai_api_key_arc,
+            event_bus,
+            pending,
+        ))
         .await
         .expect("Error creating Serenity client");
 

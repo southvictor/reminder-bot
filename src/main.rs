@@ -1,10 +1,11 @@
 mod models;
 mod cli;
 mod openai_client;
-mod handler;
+mod handlers;
 mod service;
 mod runtime;
 mod tasks;
+mod events;
 
 use std::env;
 use std::sync::Arc;
