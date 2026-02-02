@@ -11,6 +11,7 @@ use uuid::Uuid;
 use crate::events::queue::Event;
 use crate::service::reminder_service::{pending_buttons, render_pending_message, PendingReminder};
 use crate::models::reminder;
+use crate::service::openai_service::OpenAIClient;
 use crate::service::openai_service::OpenAIService;
 
 pub async fn run_event_worker(

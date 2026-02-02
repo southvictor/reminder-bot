@@ -1,6 +1,7 @@
 use crate::events::queue::{Event, EventBus};
 use crate::service::reminder_service::{pending_buttons, render_pending_message, PendingReminder};
 use crate::models::reminder;
+use crate::service::openai_service::OpenAIClient;
 use crate::service::openai_service::OpenAIService;
 use crate::service::reminder_service::ReminderService;
 use memory_db::DB;

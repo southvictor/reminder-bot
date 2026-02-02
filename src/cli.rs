@@ -4,6 +4,7 @@ use chrono::Utc;
 use serde_json;
 use crate::models::reminder;
 use crate::service::openai_service::OpenAIService;
+use crate::service::openai_service::OpenAIClient;
 use crate::service::reminder_service::ReminderService;
 use inquire::Text;
 use memory_db::DB;
