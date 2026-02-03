@@ -13,6 +13,8 @@ use crate::tasks::notification_loop;
 use crate::tasks::task_runner::TaskRunner;
 use crate::events::queue::EventBus;
 use crate::events::worker::run_event_worker;
+use crate::service::openai_service::OpenAIClient;
+use crate::service::openai_service::OpenAIService;
 
 pub async fn run_api(
     shared_db: Arc<Mutex<DB<Reminder>>>,
@@ -43,7 +45,8 @@ pub async fn run_api(
     let pending: Arc<Mutex<HashMap<String, PendingReminder>>> =
         Arc::new(Mutex::new(HashMap::new()));
     let (event_bus, event_rx) = EventBus::new(256);
-    let worker_openai = openai_api_key_arc.clone();
+    let worker_openai: Arc<dyn OpenAIClient> =
+        Arc::new(OpenAIService::new(openai_api_key_arc.as_ref().to_string()));
     let worker_secret = discord_client_secret_arc.clone();
     let worker_pending = pending.clone();
     tokio::spawn(async move {

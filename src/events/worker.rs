@@ -12,11 +12,10 @@ use crate::events::queue::Event;
 use crate::service::reminder_service::{pending_buttons, render_pending_message, PendingReminder};
 use crate::models::reminder;
 use crate::service::openai_service::OpenAIClient;
-use crate::service::openai_service::OpenAIService;
 
 pub async fn run_event_worker(
     mut rx: mpsc::Receiver<Event>,
-    openai_api_key: Arc<String>,
+    openai: Arc<dyn OpenAIClient>,
     discord_token: Arc<String>,
     pending: Arc<Mutex<HashMap<String, PendingReminder>>>,
 ) {
@@ -27,7 +26,6 @@ pub async fn run_event_worker(
                 user_id,
                 channel_id,
             } => {
-                let openai = OpenAIService::new(openai_api_key.as_ref().to_string());
                 let payload = match openai.generate_prompt(&text, "notification").await {
                     Ok(p) => p,
                     Err(err) => {
@@ -100,8 +98,43 @@ pub async fn run_event_worker(
             Event::PendingCanceled { .. } => {
                 // TODO: handle cancel
             }
-            Event::ContextSubmitted { .. } => {
-                // TODO: handle context update
+            Event::ContextSubmitted {
+                pending_id,
+                user_id,
+                context,
+            } => {
+                let mut pending_map = pending.lock().await;
+                let Some(pending_item) = pending_map.get_mut(&pending_id) else {
+                    continue;
+                };
+                if pending_item.user_id != user_id {
+                    continue;
+                }
+                if !context.trim().is_empty() {
+                    pending_item.extra_context = Some(context.trim().to_string());
+                }
+                let mut combined_prompt = pending_item.original_text.clone();
+                if let Some(ctx_value) = &pending_item.extra_context {
+                    if !ctx_value.trim().is_empty() {
+                        combined_prompt = format!(
+                            "Original request: {original}\nCorrection note: {context}",
+                            original = pending_item.original_text,
+                            context = ctx_value.trim()
+                        );
+                    }
+                }
+
+                let refreshed = match openai
+                    .generate_prompt(&combined_prompt, "notification_correction")
+                    .await
+                {
+                    Ok(payload) => serde_json::from_str::<reminder::AIReminder>(&payload).ok(),
+                    Err(_) => None,
+                };
+                if let Some(updated) = refreshed {
+                    pending_item.content = updated.content;
+                    pending_item.time = updated.time;
+                }
             }
         }
     }
