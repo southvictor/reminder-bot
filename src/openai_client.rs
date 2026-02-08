@@ -100,6 +100,22 @@ pub async fn generate_openai_prompt(
             now = now.to_rfc3339(),
             structured = prompt
         ),
+        "intent_router" => format!(
+            "You are an intent router for a reminder bot.\n\
+             Current date and time (UTC): {now}\n\
+             User timezone: America/New_York\n\
+             Task: Classify the user's message into one of these intents:\n\
+             - notification: requests that include a time/date for a reminder\n\
+             - todolist: requests to create or update a todo list without a time\n\
+             - tooluse: requests to perform an external action (e.g., schedule a meeting)\n\
+             - unknown: unclear or missing time/action\n\
+             Output ONLY raw JSON, no prose, markdown, or code fences.\n\
+             The JSON shape must be exactly:\n\
+             {{\"intent\":\"notification|todolist|tooluse|unknown\",\"normalized_text\":\"<cleaned user text>\"}}\n\
+             User message: \"{user_prompt}\"",
+            now = now.to_rfc3339(),
+            user_prompt = prompt
+        ),
         _ => return Err("Not a valid base prompt".to_string().into()),
     };
 

@@ -1,0 +1,1 @@
+This code is mostly ai-generated and new features should be "integration tested" by tests in the tests/ directory. There may still be some mocks injected into the integration tests but they should be injected into the complete application.
