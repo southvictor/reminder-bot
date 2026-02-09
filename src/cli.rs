@@ -2,10 +2,10 @@ use clap::{Parser, Subcommand};
 use chrono::DateTime;
 use chrono::Utc;
 use serde_json;
-use crate::models::reminder;
+use crate::models::notification;
 use crate::service::openai_service::OpenAIService;
 use crate::service::openai_service::OpenAIClient;
-use crate::service::reminder_service::ReminderService;
+use crate::service::notification_service::NotificationService;
 use inquire::Text;
 use memory_db::DB;
 use std::sync::Arc;
@@ -29,7 +29,7 @@ enum Commands {
 }
 
 pub async fn cli(
-    shared_db: Arc<Mutex<DB<reminder::Reminder>>>,
+    shared_db: Arc<Mutex<DB<notification::Notification>>>,
     default_user: String,
     default_channel: String,
     openai_api_key: String,
@@ -39,12 +39,12 @@ pub async fn cli(
     let mut db = shared_db.lock().await;
     match &cli.command {
         Commands::Create { content, notify_users, expires_at , channel} => {
-            if let Err(e) = ReminderService::create(&mut db, &content, &notify_users, &expires_at, &channel).await {
-                println!("Failed to create reminder: {}", e);
+            if let Err(e) = NotificationService::create(&mut db, &content, &notify_users, &expires_at, &channel).await {
+                println!("Failed to create notification: {}", e);
             }
         }
         Commands::CreatePrompt {  } => {
-            if let Err(e) = create_reminder_from_prompt(
+            if let Err(e) = create_notification_from_prompt(
                 &mut db,
                 &default_user,
                 &default_channel,
@@ -52,14 +52,14 @@ pub async fn cli(
             )
             .await
             {
-                println!("Failed to create reminder from prompt {}", e);
+                println!("Failed to create notification from prompt {}", e);
             }
         }
     }
 }
 
-async fn create_reminder_from_prompt(
-    db: &mut DB<reminder::Reminder>,
+async fn create_notification_from_prompt(
+    db: &mut DB<notification::Notification>,
     default_user: &str,
     default_channel: &str,
     openai_api_key: &str,
@@ -78,17 +78,17 @@ async fn create_reminder_from_prompt(
         .await
         .map_err(|e| -> Box<dyn std::error::Error> { format!("{}", e).into() })?;
     println!("{}", payload);
-    let ai_reminder: reminder::AIReminder = serde_json::from_str(&payload)?;
-    if let Err(e) = ReminderService::create(
+    let ai_notification: notification::AINotification = serde_json::from_str(&payload)?;
+    if let Err(e) = NotificationService::create(
         db,
-        &ai_reminder.content,
+        &ai_notification.content,
         &default_user.to_string(),
-        &ai_reminder.time,
+        &ai_notification.time,
         &default_channel.to_string(),
     )
     .await
     {
-        println!("Failed to create reminder: {}", e);
+        println!("Failed to create notification: {}", e);
     }
     Ok(())
 }

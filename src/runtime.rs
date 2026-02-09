@@ -5,9 +5,9 @@ use serenity::model::gateway::GatewayIntents;
 use tokio::sync::Mutex;
 
 use crate::handlers::discord;
-use crate::service::reminder_service::PendingReminder;
+use crate::service::notification_service::PendingNotification;
 use std::collections::HashMap;
-use crate::models::reminder::Reminder;
+use crate::models::notification::Notification;
 use crate::models::todo::TodoItem;
 use crate::tasks::calendar_loop;
 use crate::tasks::notification_loop;
@@ -17,10 +17,11 @@ use crate::events::queue::EventBus;
 use crate::events::worker::run_event_worker;
 use crate::service::openai_service::OpenAIClient;
 use crate::service::openai_service::OpenAIService;
+use crate::service::notify_flow::{PendingSession, SessionKey};
 use crate::service::routing::OpenAIRouter;
 
 pub async fn run_api(
-    shared_db: Arc<Mutex<DB<Reminder>>>,
+    shared_db: Arc<Mutex<DB<Notification>>>,
     shared_todo_db: Arc<Mutex<DB<TodoItem>>>,
     discord_client_secret: String,
     openai_api_key: String,
@@ -55,9 +56,9 @@ pub async fn run_api(
     });
     task_runner.start_all();
 
-    let pending: Arc<Mutex<HashMap<String, PendingReminder>>> =
+    let pending: Arc<Mutex<HashMap<String, PendingNotification>>> =
         Arc::new(Mutex::new(HashMap::new()));
-    let sessions: Arc<Mutex<HashMap<discord::SessionKey, discord::PendingSession>>> =
+    let sessions: Arc<Mutex<HashMap<SessionKey, PendingSession>>> =
         Arc::new(Mutex::new(HashMap::new()));
     let (event_bus, event_rx) = EventBus::new(256);
     let worker_openai: Arc<dyn OpenAIClient> =

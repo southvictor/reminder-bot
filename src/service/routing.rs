@@ -43,8 +43,23 @@ impl OpenAIRouter {
 impl IntentRouter for OpenAIRouter {
     async fn route(&self, text: &str) -> IntentResult {
         match self.openai.generate_prompt(text, "intent_router").await {
-            Ok(payload) => parse_router_payload(&payload).unwrap_or_else(|| route_intent(text)),
-            Err(_) => route_intent(text),
+            Ok(payload) => {
+                if let Some(result) = parse_router_payload(&payload) {
+                    return result;
+                }
+                eprintln!("Intent router invalid payload: {}", payload);
+                IntentResult {
+                    intent: Intent::Unknown,
+                    normalized_text: text.trim().to_string(),
+                }
+            }
+            Err(err) => {
+                eprintln!("Intent router call failed: {}", err);
+                IntentResult {
+                    intent: Intent::Unknown,
+                    normalized_text: text.trim().to_string(),
+                }
+            }
         }
     }
 }
@@ -57,13 +72,18 @@ struct RouterPayload {
 
 fn parse_router_payload(payload: &str) -> Option<IntentResult> {
     let parsed: RouterPayload = serde_json::from_str(payload).ok()?;
-    let intent = match parsed.intent.as_str() {
+    let intent_value = parsed.intent.trim().to_lowercase();
+    let intent = match intent_value.as_str() {
         "notification" => Intent::Notification,
         _ => Intent::Unknown,
     };
+    let normalized_text = parsed.normalized_text.trim().to_string();
+    if normalized_text.is_empty() {
+        return None;
+    }
     Some(IntentResult {
         intent,
-        normalized_text: parsed.normalized_text.trim().to_string(),
+        normalized_text,
     })
 }
 

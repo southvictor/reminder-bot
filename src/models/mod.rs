@@ -1,2 +1,2 @@
-pub mod reminder;
+pub mod notification;
 pub mod todo;

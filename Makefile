@@ -1,6 +1,6 @@
 RUN_MODE ?= cli
 
-.PHONY: reminder create_notification
+.PHONY: notification create_notification
 
 api:
 	@echo "Running notification api"

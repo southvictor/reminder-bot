@@ -42,13 +42,13 @@ pub async fn generate_openai_prompt(
 
     let full_prompt = match prompt_type {
         "notification" => format!(
-            "You are a reminder extraction engine.\n\
+            "You are a notification extraction engine.\n\
              Current date and time (UTC): {now}\n\
              User timezone: America/New_York\n\
              Task: From the user message below, extract:\n\
-             - \"content\": the core reminder text with extraneous scheduling words removed. For example:\n\
+             - \"content\": the core notification text with extraneous scheduling words removed. For example:\n\
                - \"buy eggs tomorrow\" -> \"buy eggs\"\n\
-               - \"remind me to call mom at 5\" -> \"call mom\"\n\
+               - \"notify me to call mom at 5\" -> \"call mom\"\n\
              - \"time\": an RFC3339 datetime string in the user's timezone.\n\
              Rules:\n\
              - If the user gives an explicit date like \"December 6th\", use that exact month and day at noon in the local timezone; do NOT change them.\n\
@@ -69,13 +69,13 @@ pub async fn generate_openai_prompt(
             user_prompt = prompt
         ),
         "notification_correction" => format!(
-            "You are a reminder correction engine.\n\
+            "You are a notification correction engine.\n\
              Current date and time (UTC): {now}\n\
              User timezone: America/New_York\n\
-             Task: Given the original reminder request and a user-provided correction note, output a corrected reminder.\n\
+             Task: Given the original notification request and a user-provided correction note, output a corrected notification.\n\
              Rules:\n\
-             - The correction note is NOT reminder content. It is only for fixing the date/time or clarifying intent.\n\
-             - Preserve the original reminder content unless the correction explicitly changes it.\n\
+             - The correction note is NOT notification content. It is only for fixing the date/time or clarifying intent.\n\
+             - Preserve the original notification content unless the correction explicitly changes it.\n\
              - If the correction only adjusts time (e.g. \"actually I meant this Saturday\"), update only the time.\n\
              - Output ONLY raw JSON, no prose, markdown, or code fences.\n\
              - The JSON shape must be exactly:\n\
@@ -87,11 +87,11 @@ pub async fn generate_openai_prompt(
         "notification_message" => format!(
             "You are a notification message formatter.\n\
              Current date and time (UTC): {now}\n\
-             Task: Given the structured reminder info below, write a short, natural English notification message to send to a user.\n\
+             Task: Given the structured notification info below, write a short, natural English notification message to send to a user.\n\
              Rules:\n\
              - Address the user(s) in second person (\"you\").\n\
              - Mention the event time explicitly.\n\
-             - Include the reminder content naturally.\n\
+             - Include the notification content naturally.\n\
              - If hours remaining is provided, include it in a friendly way.\n\
              - Keep it to 1–2 sentences, no markdown, no lists, no JSON.\n\
              - Do NOT wrap the output in quotes.\n\
@@ -101,14 +101,17 @@ pub async fn generate_openai_prompt(
             structured = prompt
         ),
         "intent_router" => format!(
-            "You are an intent router for a reminder bot.\n\
+            "You are an intent router for a notification bot.\n\
              Current date and time (UTC): {now}\n\
              User timezone: America/New_York\n\
              Task: Classify the user's message into one of these intents:\n\
-             - notification: requests that include a time/date for a reminder\n\
+             - notification: requests that include a time/date for a notification\n\
              - todolist: requests to create or update a todo list without a time\n\
              - tooluse: requests to perform an external action (e.g., schedule a meeting)\n\
              - unknown: unclear or missing time/action\n\
+             Rules:\n\
+             - If the message contains any explicit or implicit time/date (e.g., \"tomorrow\", \"next week\", weekdays, months, \"at 5pm\"), choose notification.\n\
+             - Only choose unknown if no time/date is present.\n\
              Output ONLY raw JSON, no prose, markdown, or code fences.\n\
              The JSON shape must be exactly:\n\
              {{\"intent\":\"notification|todolist|tooluse|unknown\",\"normalized_text\":\"<cleaned user text>\"}}\n\
@@ -119,16 +122,33 @@ pub async fn generate_openai_prompt(
         _ => return Err("Not a valid base prompt".to_string().into()),
     };
 
-    query_openai(full_prompt, api_key).await
+    query_openai(full_prompt, prompt_type, api_key).await
 }
 
-async fn query_openai(prompt: String, api_key: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+async fn query_openai(
+    prompt: String,
+    prompt_type: &str,
+    api_key: &str,
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    let system_message = match prompt_type {
+        "notification" | "notification_correction" => {
+            "You are a strict JSON notification extraction engine. You read instructions and a user message and reply ONLY with a single JSON object, with no markdown, no backticks, and no extra text. If the user gives an explicit date (e.g. \"December 6th\"), you preserve that exact month and day and only fill in missing year/time according to the instructions."
+        }
+        "intent_router" => {
+            "You are a strict JSON intent router. Reply ONLY with a single JSON object, with no markdown, no backticks, and no extra text."
+        }
+        "notification_message" => {
+            "You are a notification message formatter. Reply with plain text only (no JSON, no markdown, no quotes)."
+        }
+        _ => "You are a helpful assistant.",
+    };
+
     let request: OpenAIRequest = OpenAIRequest {
         model: "gpt-4o-mini".to_string(),
         messages: vec![
             OpenAIMessage {
                 role: "system".to_string(),
-                content: "You are a strict JSON reminder extraction engine. You read instructions and a user message and reply ONLY with a single JSON object, with no markdown, no backticks, and no extra text. If the user gives an explicit date (e.g. \"December 6th\"), you preserve that exact month and day and only fill in missing year/time according to the instructions.".to_string(),
+                content: system_message.to_string(),
             },
             OpenAIMessage {
                 role: "user".to_string(),

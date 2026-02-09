@@ -9,13 +9,13 @@ use uuid::Uuid;
 use std::env;
 
 // Returns the directory where DB + backups live.
-// Defaults to a relative ".reminderbot" directory.
+// Defaults to a relative "./data" directory.
 pub fn get_db_location() -> String {
     env::var("DB_LOCATION").unwrap_or("./data".to_string())
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct Reminder {
+pub struct Notification {
     pub id: String,
     pub content: String,
     pub notify: Vec<String>,
@@ -24,13 +24,13 @@ pub struct Reminder {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct AIReminder {
+pub struct AINotification {
     pub content: String,
     pub time: DateTime<Utc>
 }
 
-pub async fn create_reminder(
-    db: &mut DB<Reminder>,
+pub async fn create_notification(
+    db: &mut DB<Notification>,
     content: &String,
     notify_users: &String,
     expires_at: &DateTime<Utc>,
@@ -48,7 +48,7 @@ pub async fn create_reminder(
     notification_times.sort();
     db.insert(
         id.clone(),
-        Reminder {
+        Notification {
             id: id.clone(),
             content: content.to_string(),
             notify: users,

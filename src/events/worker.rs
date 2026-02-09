@@ -9,15 +9,15 @@ use tokio::sync::{mpsc, Mutex};
 use uuid::Uuid;
 
 use crate::events::queue::Event;
-use crate::service::reminder_service::{pending_buttons, render_pending_message, PendingReminder};
-use crate::models::reminder;
+use crate::service::notification_service::{pending_buttons, render_pending_message, PendingNotification};
+use crate::models::notification;
 use crate::service::openai_service::OpenAIClient;
 
 pub async fn run_event_worker(
     mut rx: mpsc::Receiver<Event>,
     openai: Arc<dyn OpenAIClient>,
     discord_token: Arc<String>,
-    pending: Arc<Mutex<HashMap<String, PendingReminder>>>,
+    pending: Arc<Mutex<HashMap<String, PendingNotification>>>,
 ) {
     while let Some(event) = rx.recv().await {
         match event {
@@ -30,7 +30,7 @@ pub async fn run_event_worker(
                     Ok(p) => p,
                     Err(err) => {
                         send_channel_error(&discord_token, &channel_id, &user_id, &format!(
-                            "Failed to call OpenAI for reminder: {}",
+                            "Failed to call OpenAI for notification: {}",
                             err
                         ))
                         .await;
@@ -38,11 +38,11 @@ pub async fn run_event_worker(
                     }
                 };
 
-                let ai_reminder: reminder::AIReminder = match serde_json::from_str(&payload) {
+                let ai_notification: notification::AINotification = match serde_json::from_str(&payload) {
                     Ok(r) => r,
                     Err(err) => {
                         send_channel_error(&discord_token, &channel_id, &user_id, &format!(
-                            "Failed to parse reminder JSON: {}",
+                            "Failed to parse notification JSON: {}",
                             err
                         ))
                         .await;
@@ -51,11 +51,11 @@ pub async fn run_event_worker(
                 };
 
                 let pending_id = Uuid::new_v4().to_string();
-                let pending_item = PendingReminder {
+                let pending_item = PendingNotification {
                     user_id: user_id.clone(),
                     channel_id: channel_id.clone(),
-                    content: ai_reminder.content,
-                    time: ai_reminder.time,
+                    content: ai_notification.content,
+                    time: ai_notification.time,
                     original_text: text.clone(),
                     extra_context: None,
                     expires_at: Utc::now() + Duration::minutes(5),
@@ -77,7 +77,7 @@ pub async fn run_event_worker(
                             discord_token.as_ref(),
                             &channel_id,
                             &user_id,
-                            "Invalid channel id for reminder.",
+                            "Invalid channel id for notification.",
                         )
                         .await;
                         continue;
@@ -128,7 +128,7 @@ pub async fn run_event_worker(
                     .generate_prompt(&combined_prompt, "notification_correction")
                     .await
                 {
-                    Ok(payload) => serde_json::from_str::<reminder::AIReminder>(&payload).ok(),
+                    Ok(payload) => serde_json::from_str::<notification::AINotification>(&payload).ok(),
                     Err(_) => None,
                 };
                 if let Some(updated) = refreshed {

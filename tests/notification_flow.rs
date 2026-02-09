@@ -3,7 +3,7 @@ use std::env;
 use std::sync::{Mutex, OnceLock};
 
 use chrono::TimeZone;
-use reminderBot::models::reminder::Reminder;
+use reminderBot::models::notification::Notification;
 use reminderBot::tasks::notification_loop::{notification_tick, MessageSender};
 use reminderBot::service::openai_service::OpenAIClient;
 use tokio::sync::Mutex as TokioMutex;
@@ -42,18 +42,18 @@ impl MessageSender for MockSender {
 static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 #[tokio::test]
-async fn notification_tick_sends_and_expires_reminder() {
+async fn notification_tick_sends_and_expires_notification() {
     let _guard = ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
-    let temp_dir = env::temp_dir().join(format!("reminderbot_it_{}", uuid::Uuid::new_v4()));
+    let temp_dir = env::temp_dir().join(format!("notificationbot_it_{}", uuid::Uuid::new_v4()));
     unsafe {
         env::set_var("DB_LOCATION", &temp_dir);
     }
 
     let now = chrono::Utc.with_ymd_and_hms(2026, 2, 2, 12, 0, 0).unwrap();
-    let mut db: HashMap<String, Reminder> = HashMap::new();
+    let mut db: HashMap<String, Notification> = HashMap::new();
     db.insert(
         "r1".to_string(),
-        Reminder {
+        Notification {
             id: "r1".to_string(),
             content: "call mom".to_string(),
             notify: vec!["@u".to_string()],

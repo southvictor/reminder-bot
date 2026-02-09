@@ -5,7 +5,7 @@ use chrono::TimeZone;
 use reminderBot::events::queue::{Event, EventBus};
 use reminderBot::events::worker::run_event_worker;
 use reminderBot::service::openai_service::OpenAIClient;
-use reminderBot::service::reminder_service::PendingReminder;
+use reminderBot::service::notification_service::PendingNotification;
 use tokio::sync::Mutex;
 
 struct FakeOpenAI {
@@ -29,7 +29,7 @@ impl OpenAIClient for FakeOpenAI {
 #[tokio::test]
 async fn context_submission_updates_pending() {
     let (bus, rx) = EventBus::new(4);
-    let pending: Arc<Mutex<HashMap<String, PendingReminder>>> =
+    let pending: Arc<Mutex<HashMap<String, PendingNotification>>> =
         Arc::new(Mutex::new(HashMap::new()));
 
     let pending_id = "p1".to_string();
@@ -37,7 +37,7 @@ async fn context_submission_updates_pending() {
     let mut pending_map = pending.lock().await;
     pending_map.insert(
         pending_id.clone(),
-        PendingReminder {
+        PendingNotification {
             user_id: user_id.clone(),
             channel_id: "123".to_string(),
             content: "call mom".to_string(),

@@ -12,14 +12,14 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use memory_db::load_db;
 use memory_db::DB;
-use crate::models::reminder;
+use crate::models::notification;
 use crate::models::todo;
 
 const DEFAULT_RUN_MODE: &str = "cli";
 
 #[tokio::main]
 async fn main() {
-    let db: DB<reminder::Reminder> = load_db(&reminder::get_db_location()).expect("Unable to load database.");
+    let db: DB<notification::Notification> = load_db(&notification::get_db_location()).expect("Unable to load database.");
     let shared_db = Arc::new(tokio::sync::Mutex::new(db));
     let todo_db: DB<todo::TodoItem> =
         load_db(&todo::get_db_location()).unwrap_or_else(|_| HashMap::new());

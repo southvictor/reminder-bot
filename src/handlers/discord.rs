@@ -1,11 +1,12 @@
 use crate::events::queue::{Event, EventBus};
-use crate::service::reminder_service::{pending_buttons, render_pending_message, PendingReminder};
-use crate::service::routing::{Intent, IntentRouter};
-use crate::models::reminder;
+use crate::service::notify_flow::{route_notify, NotifyDecision, PendingSession, SessionKey};
+use crate::service::notification_service::{pending_buttons, render_pending_message, PendingNotification};
+use crate::service::routing::IntentRouter;
+use crate::models::notification;
 use crate::models::todo::{self, TodoItem};
 use crate::service::openai_service::OpenAIClient;
 use crate::service::openai_service::OpenAIService;
-use crate::service::reminder_service::ReminderService;
+use crate::service::notification_service::NotificationService;
 use memory_db::{DB, save_db};
 use serde::Serialize;
 use serenity::prelude::*;
@@ -22,7 +23,7 @@ use serenity::builder::{
     CreateInputText,
 };
 use serenity::all::InputTextStyle;
-use chrono::{Duration, Utc};
+use chrono::Utc;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -32,26 +33,11 @@ pub struct ErrorMessage {
     pub error: String,
 }
 
-pub(crate) type SessionKey = (String, String);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SessionState {
-    Unknown,
-    PendingNotification,
-}
-
-#[derive(Debug, Clone)]
-pub struct PendingSession {
-    state: SessionState,
-    original_text: String,
-    last_prompt_at: chrono::DateTime<chrono::Utc>,
-}
-
 pub struct BotHandler {
-    db: Arc<Mutex<DB<reminder::Reminder>>>,
+    db: Arc<Mutex<DB<notification::Notification>>>,
     todo_db: Arc<Mutex<DB<todo::TodoItem>>>,
     openai_api_key: Arc<String>,
-    pending: Arc<Mutex<HashMap<String, PendingReminder>>>,
+    pending: Arc<Mutex<HashMap<String, PendingNotification>>>,
     sessions: Arc<Mutex<HashMap<SessionKey, PendingSession>>>,
     router: Arc<dyn IntentRouter>,
     event_bus: EventBus,
@@ -59,11 +45,11 @@ pub struct BotHandler {
 
 impl BotHandler {
     pub fn new(
-        db: Arc<Mutex<DB<reminder::Reminder>>>,
+        db: Arc<Mutex<DB<notification::Notification>>>,
         todo_db: Arc<Mutex<DB<todo::TodoItem>>>,
         openai_api_key: Arc<String>,
         event_bus: EventBus,
-        pending: Arc<Mutex<HashMap<String, PendingReminder>>>,
+        pending: Arc<Mutex<HashMap<String, PendingNotification>>>,
         sessions: Arc<Mutex<HashMap<SessionKey, PendingSession>>>,
         router: Arc<dyn IntentRouter>,
     ) -> Self {
@@ -111,36 +97,24 @@ impl BotHandler {
         let channel_id = command.channel_id.to_string();
         let session_key = (user_id.clone(), channel_id.clone());
         let now = Utc::now();
-        let mut combined_text = text.clone();
 
-        {
+        let decision = {
             let mut sessions = self.sessions.lock().await;
-            if let Some(session) = sessions.get(&session_key) {
-                if now - session.last_prompt_at > Duration::minutes(5) {
-                    sessions.remove(&session_key);
-                } else if session.state == SessionState::Unknown {
-                    combined_text = format!("{} {}", session.original_text, text);
-                }
-            }
-        }
+            route_notify(
+                self.router.as_ref(),
+                &mut sessions,
+                session_key,
+                text.clone(),
+                now,
+            )
+            .await
+        };
 
-        let routing = self.router.route(&combined_text).await;
-        match routing.intent {
-            Intent::Notification => {
-                let normalized = routing.normalized_text.clone();
-                let session = PendingSession {
-                    state: SessionState::PendingNotification,
-                    original_text: combined_text.clone(),
-                    last_prompt_at: now,
-                };
-                {
-                    let mut sessions = self.sessions.lock().await;
-                    sessions.insert(session_key, session);
-                }
-
+        match decision {
+            NotifyDecision::EmitNotify { normalized_text } => {
                 self.event_bus
                     .emit(Event::NotifyRequested {
-                        text: normalized,
+                        text: normalized_text,
                         user_id: user_id.clone(),
                         channel_id: channel_id.clone(),
                     })
@@ -150,28 +124,19 @@ impl BotHandler {
                         &ctx.http,
                         CreateInteractionResponse::Message(
                             CreateInteractionResponseMessage::new()
-                                .content("Got it — processing your reminder.")
+                                .content("Got it — processing your notification.")
                                 .ephemeral(true),
                         ),
                     )
                     .await;
             }
-            Intent::Unknown => {
-                let session = PendingSession {
-                    state: SessionState::Unknown,
-                    original_text: combined_text.clone(),
-                    last_prompt_at: now,
-                };
-                {
-                    let mut sessions = self.sessions.lock().await;
-                    sessions.insert(session_key, session);
-                }
+            NotifyDecision::NeedClarification => {
                 let _ = command
                     .create_response(
                         &ctx.http,
                         CreateInteractionResponse::Message(
                             CreateInteractionResponseMessage::new()
-                                .content("I can set reminders. What should I remind you about, and when? Re-run /notify with a time.")
+                                .content("I can set notifications. What should I notify you about, and when? Re-run /notify with a time.")
                                 .ephemeral(true),
                         ),
                     )
@@ -394,7 +359,7 @@ impl BotHandler {
                     &ctx.http,
                     CreateInteractionResponse::Message(
                         CreateInteractionResponseMessage::new()
-                            .content("This reminder is no longer available.")
+                            .content("This notification is no longer available.")
                             .ephemeral(true),
                     ),
                 )
@@ -408,7 +373,7 @@ impl BotHandler {
                     &ctx.http,
                     CreateInteractionResponse::Message(
                         CreateInteractionResponseMessage::new()
-                            .content("Only the original requester can confirm this reminder.")
+                            .content("Only the original requester can confirm this notification.")
                             .ephemeral(true),
                     ),
                 )
@@ -422,7 +387,7 @@ impl BotHandler {
                     &ctx.http,
                     CreateInteractionResponse::UpdateMessage(
                         CreateInteractionResponseMessage::new()
-                            .content("This reminder request has expired.")
+                            .content("This notification request has expired.")
                             .components(vec![]),
                     ),
                 )
@@ -441,7 +406,7 @@ impl BotHandler {
         );
 
         let mut db = self.db.lock().await;
-        if let Err(e) = ReminderService::create(
+        if let Err(e) = NotificationService::create(
             &mut db,
             &final_content,
             &pending_item.user_id,
@@ -455,7 +420,7 @@ impl BotHandler {
                     &ctx.http,
                     CreateInteractionResponse::Message(
                         CreateInteractionResponseMessage::new()
-                            .content(format!("Failed to persist reminder: {}", e))
+                            .content(format!("Failed to persist notification: {}", e))
                             .ephemeral(true),
                     ),
                 )
@@ -473,8 +438,8 @@ impl BotHandler {
                 &ctx.http,
                 CreateInteractionResponse::UpdateMessage(
                     CreateInteractionResponseMessage::new()
-                        .content(format!(
-                            "Confirmed! I'll remind you: \"{}\" at {}",
+                            .content(format!(
+                            "Confirmed! I'll notify you: \"{}\" at {}",
                             final_content, pending_item.time
                         ))
                         .components(vec![]),
@@ -500,7 +465,7 @@ impl BotHandler {
                     &ctx.http,
                     CreateInteractionResponse::Message(
                         CreateInteractionResponseMessage::new()
-                            .content("This reminder is no longer available.")
+                            .content("This notification is no longer available.")
                             .ephemeral(true),
                     ),
                 )
@@ -514,7 +479,7 @@ impl BotHandler {
                     &ctx.http,
                     CreateInteractionResponse::Message(
                         CreateInteractionResponseMessage::new()
-                            .content("Only the original requester can cancel this reminder.")
+                            .content("Only the original requester can cancel this notification.")
                             .ephemeral(true),
                     ),
                 )
@@ -532,7 +497,7 @@ impl BotHandler {
                 &ctx.http,
                 CreateInteractionResponse::UpdateMessage(
                     CreateInteractionResponseMessage::new()
-                        .content("Canceled reminder request.")
+                        .content("Canceled notification request.")
                         .components(vec![]),
                 ),
             )
@@ -556,7 +521,7 @@ impl BotHandler {
                     &ctx.http,
                     CreateInteractionResponse::Message(
                         CreateInteractionResponseMessage::new()
-                            .content("This reminder is no longer available.")
+                            .content("This notification is no longer available.")
                             .ephemeral(true),
                     ),
                 )
@@ -570,7 +535,7 @@ impl BotHandler {
                     &ctx.http,
                     CreateInteractionResponse::Message(
                         CreateInteractionResponseMessage::new()
-                            .content("Only the original requester can edit this reminder.")
+                            .content("Only the original requester can edit this notification.")
                             .ephemeral(true),
                     ),
                 )
@@ -579,7 +544,7 @@ impl BotHandler {
         }
 
         let modal = CreateModal::new(
-            format!("reminder_context_modal:{}", pending_id),
+            format!("notification_context_modal:{}", pending_id),
             "Add context",
         )
         .components(vec![CreateActionRow::InputText(
@@ -604,12 +569,12 @@ impl EventHandler for BotHandler {
         println!("{} is connected!", ready.user.name);
 
         let builder = CreateCommand::new("notify")
-            .description("Create a notification reminder")
+            .description("Create a notification")
             .add_option(
                 CreateCommandOption::new(
                     CommandOptionType::String,
                     "text",
-                    "What should I remind you about?",
+                    "What should I notify you about?",
                 )
                 .required(true),
             );
@@ -692,13 +657,13 @@ impl EventHandler for BotHandler {
                 let custom_id = component.data.custom_id.clone();
                 if let Some((action, pending_id)) = custom_id.split_once(':') {
                     match action {
-                        "reminder_confirm" => {
+                        "notification_confirm" => {
                             self.handle_pending_confirm(&ctx, component, pending_id).await;
                         }
-                        "reminder_cancel" => {
+                        "notification_cancel" => {
                             self.handle_pending_cancel(&ctx, component, pending_id).await;
                         }
-                        "reminder_context" => {
+                        "notification_context" => {
                             self.handle_pending_context(&ctx, component, pending_id).await;
                         }
                         _ => {}
@@ -722,7 +687,7 @@ impl EventHandler for BotHandler {
                         }
                     }
 
-                    let maybe_pending: Option<PendingReminder> = {
+                    let maybe_pending: Option<PendingNotification> = {
                         let pending = self.pending.lock().await;
                         pending.get(pending_id).cloned()
                     };
@@ -733,7 +698,7 @@ impl EventHandler for BotHandler {
                                 &ctx.http,
                                 CreateInteractionResponse::Message(
                                     CreateInteractionResponseMessage::new()
-                                        .content("This reminder is no longer available.")
+                                        .content("This notification is no longer available.")
                                         .ephemeral(true),
                                 ),
                             )
@@ -747,7 +712,7 @@ impl EventHandler for BotHandler {
                                 &ctx.http,
                                 CreateInteractionResponse::Message(
                                     CreateInteractionResponseMessage::new()
-                                        .content("Only the original requester can edit this reminder.")
+                                        .content("Only the original requester can edit this notification.")
                                         .ephemeral(true),
                                 ),
                             )
@@ -777,16 +742,16 @@ impl EventHandler for BotHandler {
                     {
                         Ok(payload) => {
                             eprintln!("Correction OpenAI response: {}", payload);
-                            match serde_json::from_str::<reminder::AIReminder>(&payload) {
+                            match serde_json::from_str::<notification::AINotification>(&payload) {
                             Ok(parsed) => Some(parsed),
                             Err(err) => {
-                                eprintln!("Failed to parse reminder JSON: {}", err);
+                                eprintln!("Failed to parse notification JSON: {}", err);
                                 None
                             }
                         }
                         }
                         Err(err) => {
-                            eprintln!("Failed to call OpenAI for reminder: {}", err);
+                            eprintln!("Failed to call OpenAI for notification: {}", err);
                             None
                         }
                     };

@@ -1,129 +1,128 @@
 use chrono::{DateTime, Utc};
+use memory_db::{DB, DBError};
+use serenity::builder::{CreateActionRow, CreateButton};
 
-use super::openai_service::OpenAIClient;
-use crate::models::reminder::Reminder;
+use crate::models::notification::{self, Notification};
+
+#[derive(Clone)]
+pub struct PendingNotification {
+    pub user_id: String,
+    pub channel_id: String,
+    pub content: String,
+    pub time: DateTime<Utc>,
+    pub original_text: String,
+    pub extra_context: Option<String>,
+    pub expires_at: DateTime<Utc>,
+    pub message_id: Option<u64>,
+}
+
+pub fn render_pending_message(pending: &PendingNotification) -> String {
+    let mut body: String = format!(
+        "Please confirm your notification:\nContent: {}\nTime: {}",
+        pending.content,
+        pending.time
+    );
+    if let Some(ctx) = &pending.extra_context {
+        if !ctx.trim().is_empty() {
+            body.push_str(&format!("\nAdditional context: {}", ctx.trim()));
+        }
+    }
+    body
+}
+
+pub fn pending_buttons(pending_id: &str) -> CreateActionRow {
+    CreateActionRow::Buttons(vec![
+        CreateButton::new(format!("notification_confirm:{}", pending_id))
+            .label("Confirm date/time")
+            .style(serenity::all::ButtonStyle::Success),
+        CreateButton::new(format!("notification_context:{}", pending_id))
+            .label("Add context")
+            .style(serenity::all::ButtonStyle::Primary),
+        CreateButton::new(format!("notification_cancel:{}", pending_id))
+            .label("Cancel")
+            .style(serenity::all::ButtonStyle::Danger),
+    ])
+}
 
 pub struct NotificationService;
 
 impl NotificationService {
-    pub async fn build_message<C: OpenAIClient + ?Sized>(
-        reminder: &Reminder,
-        openai: &C,
-    ) -> String {
-        let hours_remaining = match (
-            reminder.notification_times.first(),
-            reminder.notification_times.last(),
-        ) {
-            (Some(first), Some(last)) => (*last - *first).num_hours(),
-            _ => 0,
-        };
-
-        let notifications: Vec<String> = reminder
-            .notify
-            .iter()
-            .map(|user| format!("<{}>", user))
-            .collect();
-        let event_time: &DateTime<Utc> = reminder.notification_times.last().unwrap();
-
-        let structured_input = format!(
-            "users: {users}\ncontent: {content}\nevent_time: {event_time}\nhours_remaining: {hours}",
-            users = notifications.join(", "),
-            content = reminder.content,
-            event_time = event_time,
-            hours = hours_remaining,
-        );
-
-        let text_result = openai
-            .generate_prompt(&structured_input, "notification_message")
-            .await;
-
-        match text_result {
-            Ok(body) => format!(
-                "{}\n{}",
-                notifications.join(", "),
-                body
-            ),
-            Err(err) => {
-                eprintln!(
-                    "Failed to generate natural language notification, falling back. Error: {}",
-                    err
-                );
-                format!(
-                    "{}\n You have an upcoming event at {}\n {}\n Hours remaining: {}",
-                    notifications.join(","),
-                    event_time,
-                    reminder.content,
-                    hours_remaining
-                )
-            }
-        }
+    pub async fn create(
+        db: &mut DB<Notification>,
+        content: &String,
+        notify_users: &String,
+        expires_at: &DateTime<Utc>,
+        channel: &String,
+    ) -> Result<(), DBError> {
+        notification::create_notification(db, content, notify_users, expires_at, channel).await
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::service::openai_service::OpenAIClient;
-    use chrono::TimeZone;
-    use serenity::async_trait;
+    use chrono::{Duration, TimeZone};
+    use std::collections::HashMap;
+    use std::env;
+    use std::sync::{Mutex, OnceLock};
 
-    struct FakeOpenAI {
-        response: Result<String, String>,
-    }
+    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
-    #[async_trait]
-    impl OpenAIClient for FakeOpenAI {
-        async fn generate_prompt(
-            &self,
-            _prompt: &str,
-            _prompt_type: &str,
-        ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-            match &self.response {
-                Ok(body) => Ok(body.clone()),
-                Err(err) => Err(err.clone().into()),
-            }
+    #[tokio::test]
+    async fn create_notification_populates_db_and_times() {
+        let _guard = ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        let temp_dir = env::temp_dir().join(format!("notificationbot_test_{}", uuid::Uuid::new_v4()));
+        unsafe {
+            env::set_var("DB_LOCATION", &temp_dir);
         }
+
+        let mut db: DB<Notification> = HashMap::new();
+        let content = "pay rent".to_string();
+        let notify_users = "@user1,@user2".to_string();
+        let channel = "123".to_string();
+        let expires_at = Utc.with_ymd_and_hms(2026, 2, 10, 12, 0, 0).unwrap();
+
+        NotificationService::create(&mut db, &content, &notify_users, &expires_at, &channel)
+            .await
+            .expect("create notification should succeed");
+
+        assert_eq!(db.len(), 1);
+        let notification = db.values().next().unwrap();
+        assert_eq!(notification.content, content);
+        assert_eq!(notification.channel, channel);
+        assert_eq!(notification.notify, vec!["@user1".to_string(), "@user2".to_string()]);
+
+        let expected = vec![
+            expires_at - Duration::days(1),
+            expires_at - Duration::hours(1),
+        ];
+        assert_eq!(notification.notification_times, expected);
     }
 
-    #[tokio::test]
-    async fn build_message_uses_ai_response() {
-        let reminder = Reminder {
-            id: "id1".to_string(),
-            content: "call mom".to_string(),
-            notify: vec!["@u".to_string()],
-            notification_times: vec![
-                Utc.with_ymd_and_hms(2026, 2, 10, 11, 0, 0).unwrap(),
-                Utc.with_ymd_and_hms(2026, 2, 10, 12, 0, 0).unwrap(),
-            ],
-            channel: "123".to_string(),
-        };
-        let fake = FakeOpenAI {
-            response: Ok("Remember to call mom at noon.".to_string()),
+    #[test]
+    fn render_pending_message_includes_context() {
+        let pending = PendingNotification {
+            user_id: "@u".to_string(),
+            channel_id: "123".to_string(),
+            content: "buy milk".to_string(),
+            time: Utc.with_ymd_and_hms(2026, 2, 10, 12, 0, 0).unwrap(),
+            original_text: "buy milk tomorrow".to_string(),
+            extra_context: Some("add eggs".to_string()),
+            expires_at: Utc.with_ymd_and_hms(2026, 2, 10, 12, 5, 0).unwrap(),
+            message_id: None,
         };
 
-        let msg = NotificationService::build_message(&reminder, &fake).await;
-        assert!(msg.contains("<@u>"));
-        assert!(msg.contains("Remember to call mom at noon."));
+        let body = render_pending_message(&pending);
+        assert!(body.contains("buy milk"));
+        assert!(body.contains("Additional context: add eggs"));
     }
 
-    #[tokio::test]
-    async fn build_message_falls_back_on_error() {
-        let reminder = Reminder {
-            id: "id2".to_string(),
-            content: "file taxes".to_string(),
-            notify: vec!["@u".to_string()],
-            notification_times: vec![
-                Utc.with_ymd_and_hms(2026, 2, 10, 11, 0, 0).unwrap(),
-                Utc.with_ymd_and_hms(2026, 2, 10, 12, 0, 0).unwrap(),
-            ],
-            channel: "123".to_string(),
-        };
-        let fake = FakeOpenAI {
-            response: Err("boom".into()),
-        };
-
-        let msg = NotificationService::build_message(&reminder, &fake).await;
-        assert!(msg.contains("Hours remaining"));
-        assert!(msg.contains("file taxes"));
+    #[test]
+    fn pending_buttons_include_namespaced_ids() {
+        let buttons = pending_buttons("abc123");
+        let debug = format!("{:?}", buttons);
+        assert!(debug.contains("notification_confirm:abc123"));
+        assert!(debug.contains("notification_context:abc123"));
+        assert!(debug.contains("notification_cancel:abc123"));
     }
 }
