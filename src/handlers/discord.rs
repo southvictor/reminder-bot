@@ -86,14 +86,7 @@ impl BotHandler {
             .handle_notify_internal(&text, &user_id, &channel_id)
             .await;
 
-        let response = match decision {
-            NotifyDecision::EmitNotify { .. } => {
-                "Got it — processing your notification."
-            }
-            NotifyDecision::NeedClarification => {
-                "I can set notifications. What should I notify you about, and when? Re-run /notify with a time."
-            }
-        };
+        let response = Self::notify_response(&decision);
         let _ = command
             .create_response(
                 &ctx.http,
@@ -138,6 +131,17 @@ impl BotHandler {
         }
 
         decision
+    }
+
+    pub fn notify_response(decision: &NotifyDecision) -> &'static str {
+        match decision {
+            NotifyDecision::EmitNotify { .. } => {
+                "Got it — processing your notification."
+            }
+            NotifyDecision::NeedClarification => {
+                "I can set notifications. What should I notify you about, and when? Re-run /notify with a time."
+            }
+        }
     }
 
     async fn handle_todo_add(&self, ctx: &Context, command: serenity::all::CommandInteraction) {
