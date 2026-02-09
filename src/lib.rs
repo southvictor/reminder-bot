@@ -1,3 +1,6 @@
+#![allow(non_snake_case)]
+
+pub mod action;
 pub mod events;
 pub mod handlers;
 pub mod models;

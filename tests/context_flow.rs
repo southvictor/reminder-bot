@@ -2,10 +2,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use chrono::TimeZone;
-use reminderBot::events::queue::{Event, EventBus};
+use reminderBot::action::{Action, ActionEngine, ActionEvent, ActionPayload, ActionStatus, ActionStore, ActionType, NotificationDraft};
+use reminderBot::events::queue::EventBus;
 use reminderBot::events::worker::run_event_worker;
+use reminderBot::models::notification::Notification;
+use reminderBot::service::approval_prompt::ApprovalPromptService;
 use reminderBot::service::openai_service::OpenAIClient;
-use reminderBot::service::notification_service::PendingNotification;
 use tokio::sync::Mutex;
 
 struct FakeOpenAI {
@@ -26,40 +28,81 @@ impl OpenAIClient for FakeOpenAI {
     }
 }
 
+#[derive(Default)]
+struct FakeApprovalPrompt {
+    prompts: Mutex<Vec<String>>,
+}
+
+#[serenity::async_trait]
+impl ApprovalPromptService for FakeApprovalPrompt {
+    async fn prompt(&self, action: &mut Action) -> Result<(), String> {
+        let mut prompts = self.prompts.lock().await;
+        prompts.push(action.id.clone());
+        Ok(())
+    }
+
+    async fn update_status(&self, _action: &Action, _message: &str) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn update_status_message(
+        &self,
+        _channel_id: &str,
+        _user_id: &str,
+        _message: &str,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+}
+
 #[tokio::test]
 async fn context_submission_updates_pending() {
     let (bus, rx) = EventBus::new(4);
-    let pending: Arc<Mutex<HashMap<String, PendingNotification>>> =
-        Arc::new(Mutex::new(HashMap::new()));
+    let store = Arc::new(Mutex::new(ActionStore::new()));
 
     let pending_id = "p1".to_string();
     let user_id = "@u".to_string();
-    let mut pending_map = pending.lock().await;
-    pending_map.insert(
-        pending_id.clone(),
-        PendingNotification {
-            user_id: user_id.clone(),
-            channel_id: "123".to_string(),
-            content: "call mom".to_string(),
-            time: chrono::Utc.with_ymd_and_hms(2026, 2, 2, 12, 0, 0).unwrap(),
-            original_text: "call mom tomorrow".to_string(),
-            extra_context: None,
-            expires_at: chrono::Utc.with_ymd_and_hms(2026, 2, 2, 12, 5, 0).unwrap(),
-            message_id: None,
-        },
-    );
-    drop(pending_map);
+
+    let draft = NotificationDraft {
+        user_id: user_id.clone(),
+        channel_id: "123".to_string(),
+        content: "call mom".to_string(),
+        time: chrono::Utc.with_ymd_and_hms(2026, 2, 2, 12, 0, 0).unwrap(),
+        original_text: "call mom tomorrow".to_string(),
+        extra_context: None,
+        expires_at: chrono::Utc.with_ymd_and_hms(2026, 2, 2, 12, 5, 0).unwrap(),
+        message_id: None,
+    };
+
+    let action = Action {
+        id: pending_id.clone(),
+        action_type: ActionType::CreateNotification,
+        status: ActionStatus::AwaitingApproval,
+        user_id: user_id.clone(),
+        channel_id: "123".to_string(),
+        payload: Some(ActionPayload::NotificationDraft(draft)),
+        created_at: chrono::Utc.with_ymd_and_hms(2026, 2, 2, 12, 0, 0).unwrap(),
+        updated_at: chrono::Utc.with_ymd_and_hms(2026, 2, 2, 12, 0, 0).unwrap(),
+    };
+
+    {
+        let mut store_guard = store.lock().await;
+        store_guard.insert(action);
+    }
 
     let fake_openai = Arc::new(FakeOpenAI {
         response: Ok(
             "{\"content\":\"call mom\",\"time\":\"2026-02-03T12:00:00Z\"}".to_string(),
         ),
     });
-    let token = Arc::new("fake".to_string());
-    let worker = tokio::spawn(run_event_worker(rx, fake_openai, token, pending.clone()));
+    let approval = Arc::new(FakeApprovalPrompt::default());
+    let db = Arc::new(Mutex::new(HashMap::<String, Notification>::new()));
 
-    bus.emit(Event::ContextSubmitted {
-        pending_id: pending_id.clone(),
+    let engine = ActionEngine::new(store.clone(), fake_openai, approval, db);
+    let worker = tokio::spawn(run_event_worker(rx, engine));
+
+    bus.emit(ActionEvent::ContextSubmitted {
+        action_id: pending_id.clone(),
         user_id: user_id.clone(),
         context: "actually next day".to_string(),
     })
@@ -67,12 +110,13 @@ async fn context_submission_updates_pending() {
     drop(bus);
     let _ = worker.await;
 
-    let pending_map = pending.lock().await;
-    let updated = pending_map.get(&pending_id).expect("pending should exist");
-    assert_eq!(updated.content, "call mom");
+    let store_guard = store.lock().await;
+    let updated = store_guard.get(&pending_id).expect("action should exist");
+    let draft = updated.notification_draft().expect("draft should exist");
+    assert_eq!(draft.content, "call mom");
     assert_eq!(
-        updated.time,
+        draft.time,
         chrono::Utc.with_ymd_and_hms(2026, 2, 3, 12, 0, 0).unwrap()
     );
-    assert_eq!(updated.extra_context.as_deref(), Some("actually next day"));
+    assert_eq!(draft.extra_context.as_deref(), Some("actually next day"));
 }

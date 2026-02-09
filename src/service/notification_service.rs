@@ -2,21 +2,10 @@ use chrono::{DateTime, Utc};
 use memory_db::{DB, DBError};
 use serenity::builder::{CreateActionRow, CreateButton};
 
+use crate::action::NotificationDraft;
 use crate::models::notification::{self, Notification};
 
-#[derive(Clone)]
-pub struct PendingNotification {
-    pub user_id: String,
-    pub channel_id: String,
-    pub content: String,
-    pub time: DateTime<Utc>,
-    pub original_text: String,
-    pub extra_context: Option<String>,
-    pub expires_at: DateTime<Utc>,
-    pub message_id: Option<u64>,
-}
-
-pub fn render_pending_message(pending: &PendingNotification) -> String {
+pub fn render_pending_message(pending: &NotificationDraft) -> String {
     let mut body: String = format!(
         "Please confirm your notification:\nContent: {}\nTime: {}",
         pending.content,
@@ -30,15 +19,15 @@ pub fn render_pending_message(pending: &PendingNotification) -> String {
     body
 }
 
-pub fn pending_buttons(pending_id: &str) -> CreateActionRow {
+pub fn pending_buttons(action_id: &str) -> CreateActionRow {
     CreateActionRow::Buttons(vec![
-        CreateButton::new(format!("notification_confirm:{}", pending_id))
+        CreateButton::new(format!("action_confirm:{}", action_id))
             .label("Confirm date/time")
             .style(serenity::all::ButtonStyle::Success),
-        CreateButton::new(format!("notification_context:{}", pending_id))
+        CreateButton::new(format!("action_context:{}", action_id))
             .label("Add context")
             .style(serenity::all::ButtonStyle::Primary),
-        CreateButton::new(format!("notification_cancel:{}", pending_id))
+        CreateButton::new(format!("action_cancel:{}", action_id))
             .label("Cancel")
             .style(serenity::all::ButtonStyle::Danger),
     ])
@@ -101,7 +90,7 @@ mod tests {
 
     #[test]
     fn render_pending_message_includes_context() {
-        let pending = PendingNotification {
+        let pending = NotificationDraft {
             user_id: "@u".to_string(),
             channel_id: "123".to_string(),
             content: "buy milk".to_string(),
@@ -121,8 +110,8 @@ mod tests {
     fn pending_buttons_include_namespaced_ids() {
         let buttons = pending_buttons("abc123");
         let debug = format!("{:?}", buttons);
-        assert!(debug.contains("notification_confirm:abc123"));
-        assert!(debug.contains("notification_context:abc123"));
-        assert!(debug.contains("notification_cancel:abc123"));
+        assert!(debug.contains("action_confirm:abc123"));
+        assert!(debug.contains("action_context:abc123"));
+        assert!(debug.contains("action_cancel:abc123"));
     }
 }

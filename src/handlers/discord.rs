@@ -1,12 +1,8 @@
-use crate::events::queue::{Event, EventBus};
+use crate::action::ActionEvent;
+use crate::events::queue::EventBus;
 use crate::service::notify_flow::{route_notify, NotifyDecision, PendingSession, SessionKey};
-use crate::service::notification_service::{pending_buttons, render_pending_message, PendingNotification};
 use crate::service::routing::IntentRouter;
-use crate::models::notification;
 use crate::models::todo::{self, TodoItem};
-use crate::service::openai_service::OpenAIClient;
-use crate::service::openai_service::OpenAIService;
-use crate::service::notification_service::NotificationService;
 use memory_db::{DB, save_db};
 use serde::Serialize;
 use serenity::prelude::*;
@@ -34,10 +30,7 @@ pub struct ErrorMessage {
 }
 
 pub struct BotHandler {
-    db: Arc<Mutex<DB<notification::Notification>>>,
     todo_db: Arc<Mutex<DB<todo::TodoItem>>>,
-    openai_api_key: Arc<String>,
-    pending: Arc<Mutex<HashMap<String, PendingNotification>>>,
     sessions: Arc<Mutex<HashMap<SessionKey, PendingSession>>>,
     router: Arc<dyn IntentRouter>,
     event_bus: EventBus,
@@ -45,19 +38,13 @@ pub struct BotHandler {
 
 impl BotHandler {
     pub fn new(
-        db: Arc<Mutex<DB<notification::Notification>>>,
         todo_db: Arc<Mutex<DB<todo::TodoItem>>>,
-        openai_api_key: Arc<String>,
         event_bus: EventBus,
-        pending: Arc<Mutex<HashMap<String, PendingNotification>>>,
         sessions: Arc<Mutex<HashMap<SessionKey, PendingSession>>>,
         router: Arc<dyn IntentRouter>,
     ) -> Self {
         BotHandler {
-            db,
             todo_db,
-            openai_api_key,
-            pending,
             sessions,
             router,
             event_bus,
@@ -95,55 +82,62 @@ impl BotHandler {
 
         let user_id = format!("@{}", command.user.id.to_string());
         let channel_id = command.channel_id.to_string();
-        let session_key = (user_id.clone(), channel_id.clone());
-        let now = Utc::now();
+        let decision = self
+            .handle_notify_internal(&text, &user_id, &channel_id)
+            .await;
 
+        let response = match decision {
+            NotifyDecision::EmitNotify { .. } => {
+                "Got it — processing your notification."
+            }
+            NotifyDecision::NeedClarification => {
+                "I can set notifications. What should I notify you about, and when? Re-run /notify with a time."
+            }
+        };
+        let _ = command
+            .create_response(
+                &ctx.http,
+                CreateInteractionResponse::Message(
+                    CreateInteractionResponseMessage::new()
+                        .content(response)
+                        .ephemeral(true),
+                ),
+            )
+            .await;
+
+    }
+
+    pub async fn handle_notify_internal(
+        &self,
+        text: &str,
+        user_id: &str,
+        channel_id: &str,
+    ) -> NotifyDecision {
+        let session_key = (user_id.to_string(), channel_id.to_string());
+        let now = Utc::now();
         let decision = {
             let mut sessions = self.sessions.lock().await;
             route_notify(
                 self.router.as_ref(),
                 &mut sessions,
                 session_key,
-                text.clone(),
+                text.to_string(),
                 now,
             )
             .await
         };
 
-        match decision {
-            NotifyDecision::EmitNotify { normalized_text } => {
-                self.event_bus
-                    .emit(Event::NotifyRequested {
-                        text: normalized_text,
-                        user_id: user_id.clone(),
-                        channel_id: channel_id.clone(),
-                    })
-                    .await;
-                let _ = command
-                    .create_response(
-                        &ctx.http,
-                        CreateInteractionResponse::Message(
-                            CreateInteractionResponseMessage::new()
-                                .content("Got it — processing your notification.")
-                                .ephemeral(true),
-                        ),
-                    )
-                    .await;
-            }
-            NotifyDecision::NeedClarification => {
-                let _ = command
-                    .create_response(
-                        &ctx.http,
-                        CreateInteractionResponse::Message(
-                            CreateInteractionResponseMessage::new()
-                                .content("I can set notifications. What should I notify you about, and when? Re-run /notify with a time.")
-                                .ephemeral(true),
-                        ),
-                    )
-                    .await;
-            }
+        if let NotifyDecision::EmitNotify { normalized_text } = &decision {
+            self.event_bus
+                .emit(ActionEvent::NotifyRequested {
+                    text: normalized_text.clone(),
+                    user_id: user_id.to_string(),
+                    channel_id: channel_id.to_string(),
+                })
+                .await;
         }
 
+        decision
     }
 
     async fn handle_todo_add(&self, ctx: &Context, command: serenity::all::CommandInteraction) {
@@ -346,102 +340,21 @@ impl BotHandler {
         &self,
         ctx: &Context,
         interaction: serenity::all::ComponentInteraction,
-        pending_id: &str,
+        action_id: &str,
     ) {
-        let maybe_pending = {
-            let pending = self.pending.lock().await;
-            pending.get(pending_id).cloned()
-        };
-
-        let Some(pending_item) = maybe_pending else {
-            let _ = interaction
-                .create_response(
-                    &ctx.http,
-                    CreateInteractionResponse::Message(
-                        CreateInteractionResponseMessage::new()
-                            .content("This notification is no longer available.")
-                            .ephemeral(true),
-                    ),
-                )
-                .await;
-            return;
-        };
-
-        if pending_item.user_id != format!("@{}", interaction.user.id) {
-            let _ = interaction
-                .create_response(
-                    &ctx.http,
-                    CreateInteractionResponse::Message(
-                        CreateInteractionResponseMessage::new()
-                            .content("Only the original requester can confirm this notification.")
-                            .ephemeral(true),
-                    ),
-                )
-                .await;
-            return;
-        }
-
-        if pending_item.expires_at < Utc::now() {
-            let _ = interaction
-                .create_response(
-                    &ctx.http,
-                    CreateInteractionResponse::UpdateMessage(
-                        CreateInteractionResponseMessage::new()
-                            .content("This notification request has expired.")
-                            .components(vec![]),
-                    ),
-                )
-                .await;
-            let mut pending = self.pending.lock().await;
-            pending.remove(pending_id);
-            return;
-        }
-
-        let final_content = pending_item.content.clone();
-        eprintln!(
-            "Confirming pending {} -> content='{}' time='{}'",
-            pending_id,
-            pending_item.content,
-            pending_item.time
-        );
-
-        let mut db = self.db.lock().await;
-        if let Err(e) = NotificationService::create(
-            &mut db,
-            &final_content,
-            &pending_item.user_id,
-            &pending_item.time,
-            &pending_item.channel_id,
-        )
-        .await
-        {
-            let _ = interaction
-                .create_response(
-                    &ctx.http,
-                    CreateInteractionResponse::Message(
-                        CreateInteractionResponseMessage::new()
-                            .content(format!("Failed to persist notification: {}", e))
-                            .ephemeral(true),
-                    ),
-                )
-                .await;
-            return;
-        }
-
-        {
-            let mut pending = self.pending.lock().await;
-            pending.remove(pending_id);
-        }
+        self.event_bus
+            .emit(ActionEvent::ApprovalConfirmed {
+                action_id: action_id.to_string(),
+                user_id: format!("@{}", interaction.user.id),
+            })
+            .await;
 
         let _ = interaction
             .create_response(
                 &ctx.http,
                 CreateInteractionResponse::UpdateMessage(
                     CreateInteractionResponseMessage::new()
-                            .content(format!(
-                            "Confirmed! I'll notify you: \"{}\" at {}",
-                            final_content, pending_item.time
-                        ))
+                        .content("Processing your request.")
                         .components(vec![]),
                 ),
             )
@@ -452,52 +365,21 @@ impl BotHandler {
         &self,
         ctx: &Context,
         interaction: serenity::all::ComponentInteraction,
-        pending_id: &str,
+        action_id: &str,
     ) {
-        let maybe_pending = {
-            let pending = self.pending.lock().await;
-            pending.get(pending_id).cloned()
-        };
-
-        let Some(pending_item) = maybe_pending else {
-            let _ = interaction
-                .create_response(
-                    &ctx.http,
-                    CreateInteractionResponse::Message(
-                        CreateInteractionResponseMessage::new()
-                            .content("This notification is no longer available.")
-                            .ephemeral(true),
-                    ),
-                )
-                .await;
-            return;
-        };
-
-        if pending_item.user_id != format!("@{}", interaction.user.id) {
-            let _ = interaction
-                .create_response(
-                    &ctx.http,
-                    CreateInteractionResponse::Message(
-                        CreateInteractionResponseMessage::new()
-                            .content("Only the original requester can cancel this notification.")
-                            .ephemeral(true),
-                    ),
-                )
-                .await;
-            return;
-        }
-
-        {
-            let mut pending = self.pending.lock().await;
-            pending.remove(pending_id);
-        }
+        self.event_bus
+            .emit(ActionEvent::ApprovalCanceled {
+                action_id: action_id.to_string(),
+                user_id: format!("@{}", interaction.user.id),
+            })
+            .await;
 
         let _ = interaction
             .create_response(
                 &ctx.http,
                 CreateInteractionResponse::UpdateMessage(
                     CreateInteractionResponseMessage::new()
-                        .content("Canceled notification request.")
+                        .content("Processing your request.")
                         .components(vec![]),
                 ),
             )
@@ -508,43 +390,10 @@ impl BotHandler {
         &self,
         ctx: &Context,
         interaction: serenity::all::ComponentInteraction,
-        pending_id: &str,
+        action_id: &str,
     ) {
-        let maybe_pending = {
-            let pending = self.pending.lock().await;
-            pending.get(pending_id).cloned()
-        };
-
-        let Some(pending_item) = maybe_pending else {
-            let _ = interaction
-                .create_response(
-                    &ctx.http,
-                    CreateInteractionResponse::Message(
-                        CreateInteractionResponseMessage::new()
-                            .content("This notification is no longer available.")
-                            .ephemeral(true),
-                    ),
-                )
-                .await;
-            return;
-        };
-
-        if pending_item.user_id != format!("@{}", interaction.user.id) {
-            let _ = interaction
-                .create_response(
-                    &ctx.http,
-                    CreateInteractionResponse::Message(
-                        CreateInteractionResponseMessage::new()
-                            .content("Only the original requester can edit this notification.")
-                            .ephemeral(true),
-                    ),
-                )
-                .await;
-            return;
-        }
-
         let modal = CreateModal::new(
-            format!("notification_context_modal:{}", pending_id),
+            format!("action_context_modal:{}", action_id),
             "Add context",
         )
         .components(vec![CreateActionRow::InputText(
@@ -657,13 +506,13 @@ impl EventHandler for BotHandler {
                 let custom_id = component.data.custom_id.clone();
                 if let Some((action, pending_id)) = custom_id.split_once(':') {
                     match action {
-                        "notification_confirm" => {
+                        "action_confirm" => {
                             self.handle_pending_confirm(&ctx, component, pending_id).await;
                         }
-                        "notification_cancel" => {
+                        "action_cancel" => {
                             self.handle_pending_cancel(&ctx, component, pending_id).await;
                         }
-                        "notification_context" => {
+                        "action_context" => {
                             self.handle_pending_context(&ctx, component, pending_id).await;
                         }
                         _ => {}
@@ -673,9 +522,12 @@ impl EventHandler for BotHandler {
             other => {
                 if let Some(modal) = other.modal_submit() {
                     let custom_id = modal.data.custom_id.as_str();
-                    let Some((_, pending_id)) = custom_id.split_once(':') else {
+                    let Some((prefix, action_id)) = custom_id.split_once(':') else {
                         return;
                     };
+                    if prefix != "action_context_modal" {
+                        return;
+                    }
                     let mut context_value: Option<String> = None;
                     for row in &modal.data.components {
                         for component in &row.components {
@@ -687,165 +539,24 @@ impl EventHandler for BotHandler {
                         }
                     }
 
-                    let maybe_pending: Option<PendingNotification> = {
-                        let pending = self.pending.lock().await;
-                        pending.get(pending_id).cloned()
-                    };
+                    self.event_bus
+                        .emit(ActionEvent::ContextSubmitted {
+                            action_id: action_id.to_string(),
+                            user_id: format!("@{}", modal.user.id),
+                            context: context_value.unwrap_or_default(),
+                        })
+                        .await;
 
-                    let Some(mut pending_item) = maybe_pending else {
-                        let _ = modal
-                            .create_response(
-                                &ctx.http,
-                                CreateInteractionResponse::Message(
-                                    CreateInteractionResponseMessage::new()
-                                        .content("This notification is no longer available.")
-                                        .ephemeral(true),
-                                ),
-                            )
-                            .await;
-                        return;
-                    };
-
-                    if pending_item.user_id != format!("@{}", modal.user.id) {
-                        let _ = modal
-                            .create_response(
-                                &ctx.http,
-                                CreateInteractionResponse::Message(
-                                    CreateInteractionResponseMessage::new()
-                                        .content("Only the original requester can edit this notification.")
-                                        .ephemeral(true),
-                                ),
-                            )
-                            .await;
-                        return;
-                    }
-
-                    if let Some(ctx_value) = context_value {
-                        pending_item.extra_context = Some(ctx_value);
-                    }
-
-                    let mut combined_prompt = pending_item.original_text.clone();
-                    if let Some(ctx_value) = &pending_item.extra_context {
-                        if !ctx_value.trim().is_empty() {
-                            combined_prompt = format!(
-                                "Original request: {original}\nCorrection note: {context}",
-                                original = pending_item.original_text,
-                                context = ctx_value.trim()
-                            );
-                        }
-                    }
-
-                    let openai = OpenAIService::new(self.openai_api_key.as_ref().to_string());
-                    let refreshed = match openai
-                        .generate_prompt(&combined_prompt, "notification_correction")
-                        .await
-                    {
-                        Ok(payload) => {
-                            eprintln!("Correction OpenAI response: {}", payload);
-                            match serde_json::from_str::<notification::AINotification>(&payload) {
-                            Ok(parsed) => Some(parsed),
-                            Err(err) => {
-                                eprintln!("Failed to parse notification JSON: {}", err);
-                                None
-                            }
-                        }
-                        }
-                        Err(err) => {
-                            eprintln!("Failed to call OpenAI for notification: {}", err);
-                            None
-                        }
-                    };
-
-                    if let Some(updated) = refreshed {
-                        pending_item.content = updated.content;
-                        pending_item.time = updated.time;
-                    }
-
-                    {
-                        let mut pending = self.pending.lock().await;
-                        pending.insert(pending_id.to_string(), pending_item.clone());
-                    }
-                    eprintln!(
-                        "Pending update {} -> content='{}' time='{}'",
-                        pending_id,
-                        pending_item.content,
-                        pending_item.time
-                    );
-
-                    let updated_message = render_pending_message(&pending_item);
-                    if let Some(message) = &modal.message {
-                        let _ = modal
-                            .create_response(
-                                &ctx.http,
-                                CreateInteractionResponse::UpdateMessage(
-                                    CreateInteractionResponseMessage::new()
-                                        .content(updated_message)
-                                        .components(vec![pending_buttons(pending_id)]),
-                                ),
-                            )
-                            .await;
-                        let mut pending = self.pending.lock().await;
-                        if let Some(entry) = pending.get_mut(pending_id) {
-                            entry.message_id = Some(message.id.get());
-                        }
-                        return;
-                    }
-
-                    let channel_id = match pending_item.channel_id.parse::<u64>() {
-                        Ok(id) => serenity::model::id::ChannelId::new(id),
-                        Err(_) => {
-                            let _ = modal
-                                .create_response(
-                                    &ctx.http,
-                                    CreateInteractionResponse::Message(
-                                        CreateInteractionResponseMessage::new()
-                                            .content("Failed to refresh confirmation.")
-                                            .ephemeral(true),
-                                    ),
-                                )
-                                .await;
-                            return;
-                        }
-                    };
-                    match channel_id
-                        .send_message(
+                    let _ = modal
+                        .create_response(
                             &ctx.http,
-                            serenity::builder::CreateMessage::new()
-                                .content(updated_message)
-                                .components(vec![pending_buttons(pending_id)]),
+                            CreateInteractionResponse::Message(
+                                CreateInteractionResponseMessage::new()
+                                    .content("Thanks! Updating your notification preview.")
+                                    .ephemeral(true),
+                            ),
                         )
-                        .await
-                    {
-                        Ok(message) => {
-                            let mut pending = self.pending.lock().await;
-                            if let Some(entry) = pending.get_mut(pending_id) {
-                                entry.message_id = Some(message.id.get());
-                            }
-                            let _ = modal
-                                .create_response(
-                                    &ctx.http,
-                                    CreateInteractionResponse::Message(
-                                        CreateInteractionResponseMessage::new()
-                                            .content("Context updated.")
-                                            .ephemeral(true),
-                                    ),
-                                )
-                                .await;
-                        }
-                        Err(err) => {
-                            eprintln!("Failed to send refreshed confirmation: {:?}", err);
-                            let _ = modal
-                                .create_response(
-                                    &ctx.http,
-                                    CreateInteractionResponse::Message(
-                                        CreateInteractionResponseMessage::new()
-                                            .content("Context updated, but failed to refresh the preview.")
-                                            .ephemeral(true),
-                                    ),
-                                )
-                                .await;
-                        }
-                    }
+                        .await;
                 }
             }
         }

@@ -4,8 +4,8 @@ use memory_db::DB;
 use serenity::model::gateway::GatewayIntents;
 use tokio::sync::Mutex;
 
+use crate::action::{ActionEngine, ActionStore};
 use crate::handlers::discord;
-use crate::service::notification_service::PendingNotification;
 use std::collections::HashMap;
 use crate::models::notification::Notification;
 use crate::models::todo::TodoItem;
@@ -15,6 +15,7 @@ use crate::tasks::todo_loop;
 use crate::tasks::task_runner::TaskRunner;
 use crate::events::queue::EventBus;
 use crate::events::worker::run_event_worker;
+use crate::service::approval_prompt::DiscordApprovalPromptService;
 use crate::service::openai_service::OpenAIClient;
 use crate::service::openai_service::OpenAIService;
 use crate::service::notify_flow::{PendingSession, SessionKey};
@@ -56,8 +57,7 @@ pub async fn run_api(
     });
     task_runner.start_all();
 
-    let pending: Arc<Mutex<HashMap<String, PendingNotification>>> =
-        Arc::new(Mutex::new(HashMap::new()));
+    let action_store = Arc::new(Mutex::new(ActionStore::new()));
     let sessions: Arc<Mutex<HashMap<SessionKey, PendingSession>>> =
         Arc::new(Mutex::new(HashMap::new()));
     let (event_bus, event_rx) = EventBus::new(256);
@@ -66,20 +66,24 @@ pub async fn run_api(
     let router: Arc<dyn crate::service::routing::IntentRouter> =
         Arc::new(OpenAIRouter::new(worker_openai.clone()));
     let worker_secret = discord_client_secret_arc.clone();
-    let worker_pending = pending.clone();
+    let approval_service: Arc<dyn crate::service::approval_prompt::ApprovalPromptService> =
+        Arc::new(DiscordApprovalPromptService::new(worker_secret.clone()));
+    let engine = ActionEngine::new(
+        action_store.clone(),
+        worker_openai,
+        approval_service,
+        shared_db.clone(),
+    );
     tokio::spawn(async move {
-        run_event_worker(event_rx, worker_openai, worker_secret, worker_pending).await;
+        run_event_worker(event_rx, engine).await;
     });
 
     let token = discord_client_secret;
     let intents = GatewayIntents::GUILD_MESSAGES | GatewayIntents::DIRECT_MESSAGES;
     let mut client = serenity::Client::builder(token, intents)
         .event_handler(discord::BotHandler::new(
-            shared_db,
             shared_todo_db,
-            openai_api_key_arc,
             event_bus,
-            pending,
             sessions,
             router,
         ))
