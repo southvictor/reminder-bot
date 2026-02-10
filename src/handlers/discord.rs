@@ -1,5 +1,6 @@
 use crate::action::ActionEvent;
 use crate::events::queue::EventBus;
+use crate::handlers::discord_responder::{InteractionResponder, SerenityResponder};
 use crate::service::notify_flow::{route_notify, NotifyDecision, PendingSession, SessionKey};
 use crate::service::routing::IntentRouter;
 use crate::models::todo::{self, TodoItem};
@@ -82,20 +83,8 @@ impl BotHandler {
 
         let user_id = format!("@{}", command.user.id.to_string());
         let channel_id = command.channel_id.to_string();
-        let decision = self
-            .handle_notify_internal(&text, &user_id, &channel_id)
-            .await;
-
-        let response = Self::notify_response(&decision);
-        let _ = command
-            .create_response(
-                &ctx.http,
-                CreateInteractionResponse::Message(
-                    CreateInteractionResponseMessage::new()
-                        .content(response)
-                        .ephemeral(true),
-                ),
-            )
+        let responder = SerenityResponder::for_command(ctx, &command);
+        self.handle_notify_with(&responder, &text, &user_id, &channel_id)
             .await;
 
     }
@@ -142,6 +131,18 @@ impl BotHandler {
                 "I can set notifications. What should I notify you about, and when? Re-run /notify with a time."
             }
         }
+    }
+
+    pub async fn handle_notify_with(
+        &self,
+        responder: &dyn InteractionResponder,
+        text: &str,
+        user_id: &str,
+        channel_id: &str,
+    ) -> NotifyDecision {
+        let decision = self.handle_notify_internal(text, user_id, channel_id).await;
+        responder.reply_ephemeral(Self::notify_response(&decision)).await;
+        decision
     }
 
     async fn handle_todo_add(&self, ctx: &Context, command: serenity::all::CommandInteraction) {
@@ -353,16 +354,8 @@ impl BotHandler {
             })
             .await;
 
-        let _ = interaction
-            .create_response(
-                &ctx.http,
-                CreateInteractionResponse::UpdateMessage(
-                    CreateInteractionResponseMessage::new()
-                        .content("Processing your request.")
-                        .components(vec![]),
-                ),
-            )
-            .await;
+        let responder = SerenityResponder::for_component(ctx, &interaction);
+        responder.reply_update("Processing your request.").await;
     }
 
     async fn handle_pending_cancel(
@@ -378,22 +371,23 @@ impl BotHandler {
             })
             .await;
 
-        let _ = interaction
-            .create_response(
-                &ctx.http,
-                CreateInteractionResponse::UpdateMessage(
-                    CreateInteractionResponseMessage::new()
-                        .content("Processing your request.")
-                        .components(vec![]),
-                ),
-            )
-            .await;
+        let responder = SerenityResponder::for_component(ctx, &interaction);
+        responder.reply_update("Processing your request.").await;
     }
 
     async fn handle_pending_context(
         &self,
         ctx: &Context,
         interaction: serenity::all::ComponentInteraction,
+        action_id: &str,
+    ) {
+        let responder = SerenityResponder::for_component(ctx, &interaction);
+        self.handle_pending_context_with(&responder, action_id).await;
+    }
+
+    pub async fn handle_pending_context_with(
+        &self,
+        responder: &dyn InteractionResponder,
         action_id: &str,
     ) {
         let modal = CreateModal::new(
@@ -410,9 +404,7 @@ impl BotHandler {
             .required(false),
         )]);
 
-        let _ = interaction
-            .create_response(&ctx.http, CreateInteractionResponse::Modal(modal))
-            .await;
+        responder.show_modal(modal).await;
     }
 }
 
