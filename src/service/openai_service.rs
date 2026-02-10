@@ -1,4 +1,4 @@
-use crate::openai_client;
+use crate::clients::openai_client;
 use serenity::async_trait;
 
 #[async_trait]

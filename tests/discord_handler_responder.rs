@@ -5,7 +5,20 @@ use reminderBot::handlers::discord::BotHandler;
 use reminderBot::handlers::discord_responder::InteractionResponder;
 use reminderBot::models::todo::TodoItem;
 use reminderBot::service::routing::HeuristicRouter;
+use std::sync::Mutex as StdMutex;
 use tokio::sync::Mutex;
+
+static ENV_LOCK: StdMutex<()> = StdMutex::new(());
+
+fn prepare_db_location(test_name: &str) -> std::sync::MutexGuard<'static, ()> {
+    let guard = ENV_LOCK.lock().unwrap();
+    let base = format!("./data/test_{}", test_name);
+    std::fs::create_dir_all(&base).unwrap();
+    unsafe {
+        std::env::set_var("DB_LOCATION", &base);
+    }
+    guard
+}
 
 #[derive(Default)]
 struct MockResponder {
@@ -56,6 +69,7 @@ async fn notify_with_responder_emits_response() {
 
 #[tokio::test]
 async fn notify_with_responder_unknown_message() {
+    let _guard = prepare_db_location("notify_with_responder_unknown_message");
     let (bus, _rx) = reminderBot::events::queue::EventBus::new(8);
     let router = Arc::new(HeuristicRouter);
     let todo_db = Arc::new(Mutex::new(HashMap::<String, TodoItem>::new()));
@@ -69,12 +83,12 @@ async fn notify_with_responder_unknown_message() {
 
     assert!(matches!(
         decision,
-        reminderBot::service::notify_flow::NotifyDecision::NeedClarification
+        reminderBot::service::notify_flow::NotifyDecision::EmitTodo { .. }
     ));
     let replies = responder.replies.lock().await;
     assert_eq!(
         replies.last().map(String::as_str),
-        Some("I can set notifications. What should I notify you about, and when? Re-run /notify with a time.")
+        Some("Added to your todo list.")
     );
 }
 

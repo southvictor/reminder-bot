@@ -107,14 +107,13 @@ pub async fn generate_openai_prompt(
              Task: Classify the user's message into one of these intents:\n\
              - notification: requests that include a time/date for a notification\n\
              - todolist: requests to create or update a todo list without a time\n\
-             - tooluse: requests to perform an external action (e.g., schedule a meeting)\n\
              - unknown: unclear or missing time/action\n\
              Rules:\n\
              - If the message contains any explicit or implicit time/date (e.g., \"tomorrow\", \"next week\", weekdays, months, \"at 5pm\"), choose notification.\n\
-             - Only choose unknown if no time/date is present.\n\
+             - If the message contains do, or finish, or check or similar words, its a todolist. \n\
              Output ONLY raw JSON, no prose, markdown, or code fences.\n\
              The JSON shape must be exactly:\n\
-             {{\"intent\":\"notification|todolist|tooluse|unknown\",\"normalized_text\":\"<cleaned user text>\"}}\n\
+             {{\"intent\":\"notification|todolist|unknown\",\"normalized_text\":\"<cleaned user text>\"}}\n\
              User message: \"{user_prompt}\"",
             now = now.to_rfc3339(),
             user_prompt = prompt

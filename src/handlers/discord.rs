@@ -1,10 +1,10 @@
-use crate::action::ActionEvent;
+use crate::handlers::action::ActionEvent;
 use crate::events::queue::EventBus;
 use crate::handlers::discord_responder::{InteractionResponder, SerenityResponder};
 use crate::service::notify_flow::{route_notify, NotifyDecision, PendingSession, SessionKey};
 use crate::service::routing::IntentRouter;
-use crate::models::todo::{self, TodoItem};
-use memory_db::{DB, save_db};
+use crate::models::todo;
+use memory_db::DB;
 use serde::Serialize;
 use serenity::prelude::*;
 use serenity::async_trait;
@@ -118,17 +118,29 @@ impl BotHandler {
                 })
                 .await;
         }
+        if let NotifyDecision::EmitTodo { normalized_text } = &decision {
+            let mut db = self.todo_db.lock().await;
+            if let Err(err) = todo::create_todo(&mut db, user_id, normalized_text) {
+                return NotifyDecision::TodoFailed {
+                    error: err.to_string(),
+                };
+            }
+        }
 
         decision
     }
 
-    pub fn notify_response(decision: &NotifyDecision) -> &'static str {
+    pub fn notify_response(decision: &NotifyDecision) -> String {
         match decision {
             NotifyDecision::EmitNotify { .. } => {
-                "Got it — processing your notification."
+                "Got it — processing your notification.".to_string()
             }
+            NotifyDecision::EmitTodo { .. } => "Added to your todo list.".to_string(),
             NotifyDecision::NeedClarification => {
-                "I can set notifications. What should I notify you about, and when? Re-run /notify with a time."
+                "I can set notifications. What should I notify you about, and when? Re-run /notify with a time.".to_string()
+            }
+            NotifyDecision::TodoFailed { error } => {
+                format!("Failed to create todo: {}", error)
             }
         }
     }
@@ -141,204 +153,8 @@ impl BotHandler {
         channel_id: &str,
     ) -> NotifyDecision {
         let decision = self.handle_notify_internal(text, user_id, channel_id).await;
-        responder.reply_ephemeral(Self::notify_response(&decision)).await;
+        responder.reply_ephemeral(&Self::notify_response(&decision)).await;
         decision
-    }
-
-    async fn handle_todo_add(&self, ctx: &Context, command: serenity::all::CommandInteraction) {
-        let text = command
-            .data
-            .options
-            .iter()
-            .find(|opt| opt.name == "add")
-            .and_then(|opt| match &opt.value {
-                serenity::all::CommandDataOptionValue::SubCommand(sub) => Some(sub),
-                _ => None,
-            })
-            .and_then(|sub| {
-                sub.iter()
-                    .find(|opt| opt.name == "text")
-                    .and_then(|opt| match &opt.value {
-                        serenity::all::CommandDataOptionValue::String(s) => Some(s.as_str()),
-                        _ => None,
-                    })
-            })
-            .unwrap_or("")
-            .to_string();
-
-        if text.trim().is_empty() {
-            let _ = command
-                .create_response(
-                    &ctx.http,
-                    CreateInteractionResponse::Message(
-                        CreateInteractionResponseMessage::new()
-                            .content("Missing `text` argument for /todo add")
-                            .ephemeral(true),
-                    ),
-                )
-                .await;
-            return;
-        }
-
-        let user_id = command.user.id.to_string();
-        let mut db = self.todo_db.lock().await;
-        if let Err(err) = todo::create_todo(&mut db, &user_id, &text) {
-            let _ = command
-                .create_response(
-                    &ctx.http,
-                    CreateInteractionResponse::Message(
-                        CreateInteractionResponseMessage::new()
-                            .content(format!("Failed to create todo: {}", err))
-                            .ephemeral(true),
-                    ),
-                )
-                .await;
-            return;
-        }
-
-        let _ = command
-            .create_response(
-                &ctx.http,
-                CreateInteractionResponse::Message(
-                    CreateInteractionResponseMessage::new()
-                        .content("Added to your todo list.")
-                        .ephemeral(true),
-                ),
-            )
-            .await;
-    }
-
-    async fn handle_todo_list(&self, ctx: &Context, command: serenity::all::CommandInteraction) {
-        let user_id = command.user.id.to_string();
-        let db = self.todo_db.lock().await;
-        let mut items: Vec<TodoItem> = db
-            .values()
-            .filter(|item| item.user_id == user_id && item.completed_at.is_none())
-            .cloned()
-            .collect();
-        items.sort_by_key(|item| item.created_at);
-
-        let content = if items.is_empty() {
-            "You have no open todos.".to_string()
-        } else {
-            let mut body = String::from("Your open todos:\n");
-            for (idx, item) in items.iter().enumerate() {
-                body.push_str(&format!("{}) {}\n", idx + 1, item.content));
-            }
-            body.trim_end().to_string()
-        };
-
-        let _ = command
-            .create_response(
-                &ctx.http,
-                CreateInteractionResponse::Message(
-                    CreateInteractionResponseMessage::new()
-                        .content(content)
-                        .ephemeral(true),
-                ),
-            )
-            .await;
-    }
-
-    async fn handle_todo_done(&self, ctx: &Context, command: serenity::all::CommandInteraction) {
-        let index = command
-            .data
-            .options
-            .iter()
-            .find(|opt| opt.name == "done")
-            .and_then(|opt| match &opt.value {
-                serenity::all::CommandDataOptionValue::SubCommand(sub) => Some(sub),
-                _ => None,
-            })
-            .and_then(|sub| {
-                sub.iter()
-                    .find(|opt| opt.name == "index")
-                    .and_then(|opt| match opt.value {
-                        serenity::all::CommandDataOptionValue::Integer(v) => Some(v),
-                        _ => None,
-                    })
-            })
-            .unwrap_or(0);
-
-        if index <= 0 {
-            let _ = command
-                .create_response(
-                    &ctx.http,
-                    CreateInteractionResponse::Message(
-                        CreateInteractionResponseMessage::new()
-                            .content("Provide a valid index for /todo done.")
-                            .ephemeral(true),
-                    ),
-                )
-                .await;
-            return;
-        }
-
-        let user_id = command.user.id.to_string();
-        let mut db = self.todo_db.lock().await;
-        let mut items: Vec<TodoItem> = db
-            .values()
-            .filter(|item| item.user_id == user_id && item.completed_at.is_none())
-            .cloned()
-            .collect();
-        items.sort_by_key(|item| item.created_at);
-
-        let idx = (index - 1) as usize;
-        let Some(item) = items.get(idx) else {
-            let _ = command
-                .create_response(
-                    &ctx.http,
-                    CreateInteractionResponse::Message(
-                        CreateInteractionResponseMessage::new()
-                            .content("That todo index does not exist.")
-                            .ephemeral(true),
-                    ),
-                )
-                .await;
-            return;
-        };
-
-        if let Some(entry) = db.get_mut(&item.id) {
-            entry.completed_at = Some(Utc::now());
-        }
-        let _ = save_db(&todo::get_db_location(), &db);
-
-        let _ = command
-            .create_response(
-                &ctx.http,
-                CreateInteractionResponse::Message(
-                    CreateInteractionResponseMessage::new()
-                        .content("Marked as done.")
-                        .ephemeral(true),
-                ),
-            )
-            .await;
-    }
-
-    async fn handle_todo_clear(&self, ctx: &Context, command: serenity::all::CommandInteraction) {
-        let user_id = command.user.id.to_string();
-        let mut db = self.todo_db.lock().await;
-        let to_remove: Vec<String> = db
-            .values()
-            .filter(|item| item.user_id == user_id && item.completed_at.is_some())
-            .map(|item| item.id.clone())
-            .collect();
-
-        for id in to_remove {
-            db.remove(id.as_str());
-        }
-        let _ = save_db(&todo::get_db_location(), &db);
-
-        let _ = command
-            .create_response(
-                &ctx.http,
-                CreateInteractionResponse::Message(
-                    CreateInteractionResponseMessage::new()
-                        .content("Cleared completed todos.")
-                        .ephemeral(true),
-                ),
-            )
-            .await;
     }
 
     async fn handle_pending_confirm(
@@ -426,51 +242,6 @@ impl EventHandler for BotHandler {
 
         let _ = Command::create_global_command(&ctx.http, builder).await;
 
-        let todo_builder = CreateCommand::new("todo")
-            .description("Manage your todo list")
-            .add_option(
-                CreateCommandOption::new(
-                    CommandOptionType::SubCommand,
-                    "add",
-                    "Add a new todo item",
-                )
-                .add_sub_option(
-                    CreateCommandOption::new(
-                        CommandOptionType::String,
-                        "text",
-                        "Todo text",
-                    )
-                    .required(true),
-                ),
-            )
-            .add_option(CreateCommandOption::new(
-                CommandOptionType::SubCommand,
-                "list",
-                "List open todos",
-            ))
-            .add_option(
-                CreateCommandOption::new(
-                    CommandOptionType::SubCommand,
-                    "done",
-                    "Mark a todo as done by index",
-                )
-                .add_sub_option(
-                    CreateCommandOption::new(
-                        CommandOptionType::Integer,
-                        "index",
-                        "Index from /todo list",
-                    )
-                    .required(true),
-                ),
-            )
-            .add_option(CreateCommandOption::new(
-                CommandOptionType::SubCommand,
-                "clear",
-                "Clear completed todos",
-            ));
-
-        let _ = Command::create_global_command(&ctx.http, todo_builder).await;
-
     }
 
     async fn interaction_create(&self, ctx: Context, interaction: DiscordInteraction) {
@@ -478,21 +249,6 @@ impl EventHandler for BotHandler {
             DiscordInteraction::Command(command) => {
                 match command.data.name.as_str() {
                     "notify" => self.handle_notify(&ctx, command).await,
-                    "todo" => {
-                        let sub = command
-                            .data
-                            .options
-                            .first()
-                            .map(|opt| opt.name.as_str())
-                            .unwrap_or("");
-                        match sub {
-                            "add" => self.handle_todo_add(&ctx, command).await,
-                            "list" => self.handle_todo_list(&ctx, command).await,
-                            "done" => self.handle_todo_done(&ctx, command).await,
-                            "clear" => self.handle_todo_clear(&ctx, command).await,
-                            _ => {}
-                        }
-                    }
                     _ => {
                         // Unknown or unhandled command; ignore for now.
                     }

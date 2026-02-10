@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use reminderBot::action::{Action, ActionEngine, ActionEvent, ActionStore};
+use reminderBot::handlers::action::{Action, ActionEngine, ActionEvent, ActionStore};
 use reminderBot::events::queue::EventBus;
 use reminderBot::events::worker::run_event_worker;
 use reminderBot::handlers::discord::BotHandler;
@@ -10,8 +10,21 @@ use reminderBot::models::todo::TodoItem;
 use reminderBot::service::approval_prompt::ApprovalPromptService;
 use reminderBot::service::openai_service::OpenAIClient;
 use reminderBot::service::routing::HeuristicRouter;
+use std::sync::Mutex as StdMutex;
 use tokio::sync::Mutex;
 use tokio::time::{sleep, timeout, Duration};
+
+static ENV_LOCK: StdMutex<()> = StdMutex::new(());
+
+fn prepare_db_location(test_name: &str) -> std::sync::MutexGuard<'static, ()> {
+    let guard = ENV_LOCK.lock().unwrap();
+    let base = format!("./data/test_{}", test_name);
+    std::fs::create_dir_all(&base).unwrap();
+    unsafe {
+        std::env::set_var("DB_LOCATION", &base);
+    }
+    guard
+}
 
 struct FakeOpenAI {
     response: Result<String, String>,
@@ -270,6 +283,7 @@ async fn end_to_end_notify_context_correction_flow() {
 
 #[tokio::test]
 async fn end_to_end_unknown_message_flow() {
+    let _guard = prepare_db_location("end_to_end_unknown_message_flow");
     let (bus, _rx) = EventBus::new(16);
     let router = Arc::new(HeuristicRouter);
     let todo_db = Arc::new(Mutex::new(HashMap::<String, TodoItem>::new()));
@@ -281,8 +295,9 @@ async fn end_to_end_unknown_message_flow() {
         .await;
     let response = BotHandler::notify_response(&decision);
 
-    assert_eq!(
-        response,
-        "I can set notifications. What should I notify you about, and when? Re-run /notify with a time."
-    );
+    assert!(matches!(
+        decision,
+        reminderBot::service::notify_flow::NotifyDecision::EmitTodo { .. }
+    ));
+    assert_eq!(response, "Added to your todo list.");
 }

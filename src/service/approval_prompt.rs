@@ -3,7 +3,7 @@ use std::sync::Arc;
 use serenity::http::Http;
 use serenity::model::id::ChannelId;
 
-use crate::action::{Action, ActionPayload};
+use crate::handlers::action::{Action, ActionPayload};
 use crate::service::notification_service::{pending_buttons, render_pending_message};
 
 #[serenity::async_trait]

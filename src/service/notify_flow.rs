@@ -8,6 +8,7 @@ pub type SessionKey = (String, String);
 pub enum SessionState {
     Unknown,
     PendingNotification,
+    PendingTodo,
 }
 
 #[derive(Debug, Clone)]
@@ -19,6 +20,8 @@ pub struct PendingSession {
 
 pub enum NotifyDecision {
     EmitNotify { normalized_text: String },
+    EmitTodo { normalized_text: String },
+    TodoFailed { error: String },
     NeedClarification,
 }
 
@@ -48,6 +51,17 @@ pub async fn route_notify(
             };
             sessions.insert(session_key, session);
             NotifyDecision::EmitNotify {
+                normalized_text: routing.normalized_text,
+            }
+        }
+        Intent::Todolist => {
+            let session = PendingSession {
+                state: SessionState::PendingTodo,
+                original_text: combined_text,
+                last_prompt_at: now,
+            };
+            sessions.insert(session_key, session);
+            NotifyDecision::EmitTodo {
                 normalized_text: routing.normalized_text,
             }
         }

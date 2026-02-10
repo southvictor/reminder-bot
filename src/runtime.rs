@@ -4,7 +4,7 @@ use memory_db::DB;
 use serenity::model::gateway::GatewayIntents;
 use tokio::sync::Mutex;
 
-use crate::action::{ActionEngine, ActionStore};
+use crate::handlers::action::{ActionEngine, ActionStore};
 use crate::handlers::discord;
 use std::collections::HashMap;
 use crate::models::notification::Notification;

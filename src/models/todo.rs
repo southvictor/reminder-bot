@@ -7,9 +7,6 @@ use uuid::Uuid;
 // Returns the directory where todo DB + backups live.
 // Defaults to a relative "./data/todo" directory.
 pub fn get_db_location() -> String {
-    if let Ok(path) = env::var("TODO_DB_LOCATION") {
-        return path;
-    }
     let base = env::var("DB_LOCATION").unwrap_or("./data".to_string());
     format!("{}/todo", base)
 }

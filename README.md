@@ -63,9 +63,10 @@ Components + Runtime Flow
                                 │ receives
                                 ▼
         ┌──────────────────────────────────────────────┐
-        │ Discord interactions: /notify, /todo, buttons │
+        │ Discord interactions: /notify, buttons         │
         │ - /notify → routing/state machine (notify_flow)│
         │ - if notification → emit Event::NotifyRequested│
+        │ - if todolist → create todo                    │
         │ - if unknown → prompt clarification            │
         └──────────────────────────────────────────────┘
 ```
@@ -81,19 +82,19 @@ Notify Flow State Machine
           │  Routing     │  (IntentRouter: LLM w/ heuristic fallback)
           └───┬───────┬──┘
               │       │
-    notification    unknown
-              │       │
-              ▼       ▼
-   ┌────────────────┐ ┌─────────────────┐
-   │ Pending         │ │ Unknown         │
-   │ Notification    │ │ (clarify prompt)│
-   └──────┬─────────┘ └────────┬────────┘
-          │ confirm/cancel               │ follow-up /notify
-          ▼                              └──────────────┐
-     ┌───────────┐                                     ▼
-     │ Confirmed │                               ┌──────────────┐
-     └───────────┘                               │  Routing     │
-                                                 └──────────────┘
+    notification    todolist              unknown
+              │       │                   │
+              ▼       ▼                   ▼
+   ┌────────────────┐ ┌────────────────┐ ┌─────────────────┐
+   │ Pending         │ │ Todo Created   │ │ Unknown         │
+   │ Notification    │ │ (saved)        │ │ (clarify prompt)│
+   └──────┬─────────┘ └────────────────┘ └────────┬────────┘
+          │ confirm/cancel                                   │ follow-up /notify
+          ▼                                                  └──────────────┐
+     ┌───────────┐                                                         ▼
+     │ Confirmed │                                                   ┌──────────────┐
+     └───────────┘                                                   │  Routing     │
+                                                                     └──────────────┘
 ```
 
 Docker build
@@ -115,5 +116,17 @@ Required Permissions for channel.
 - applications.commands
 - Send messages
 - View Channels
+
+Configuration
+-------------
+The app reads configuration from `./config.properties` by default. You can override the path with the `CONFIG_FILE` environment variable.
+
+Example `config.properties`:
+```
+DISCORD_CLIENT_SECRET=your-discord-bot-token
+OPENAI_API_KEY=your-openai-api-key
+DB_LOCATION=./data
+RUN_MODE=api
+```
 
 Set DISCORD_CLIENT_SECRET to the discord app's bot token.

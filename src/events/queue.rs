@@ -1,6 +1,6 @@
 use tokio::sync::mpsc;
 
-use crate::action::ActionEvent;
+use crate::handlers::action::ActionEvent;
 
 #[derive(Clone)]
 pub struct EventBus {

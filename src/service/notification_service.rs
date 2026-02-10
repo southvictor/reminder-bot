@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use memory_db::{DB, DBError};
 use serenity::builder::{CreateActionRow, CreateButton};
 
-use crate::action::NotificationDraft;
+use crate::handlers::action::NotificationDraft;
 use crate::models::notification::{self, Notification};
 
 pub fn render_pending_message(pending: &NotificationDraft) -> String {

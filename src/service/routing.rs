@@ -6,6 +6,7 @@ use std::sync::Arc;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Intent {
     Notification,
+    Todolist,
     Unknown,
 }
 
@@ -75,6 +76,7 @@ fn parse_router_payload(payload: &str) -> Option<IntentResult> {
     let intent_value = parsed.intent.trim().to_lowercase();
     let intent = match intent_value.as_str() {
         "notification" => Intent::Notification,
+        "todolist" => Intent::Todolist,
         _ => Intent::Unknown,
     };
     let normalized_text = parsed.normalized_text.trim().to_string();
@@ -104,7 +106,7 @@ pub fn route_intent(text: &str) -> IntentResult {
     }
 
     IntentResult {
-        intent: Intent::Unknown,
+        intent: Intent::Todolist,
         normalized_text: normalized,
     }
 }
