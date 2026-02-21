@@ -2,4 +2,4 @@
 
 api:
 	@echo "Running notification api"
-	RUN_MODE=api cargo run
+	CONFIG_FILE=./local.dev.config.properties RUN_MODE=api cargo run

@@ -3,5 +3,5 @@
 data
 .DS_Store
 commands
-local.env
-local.dev.env
+local.config.properties
+local.dev.config.properties
