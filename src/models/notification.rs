@@ -21,6 +21,8 @@ pub struct Notification {
     pub notify: Vec<String>,
     pub notification_times: Vec<DateTime<Utc>>,
     pub channel: String,
+    #[serde(default)]
+    pub timezone: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -35,6 +37,7 @@ pub async fn create_notification(
     notify_users: &String,
     expires_at: &DateTime<Utc>,
     channel: &String,
+    timezone: &str,
 ) -> Result<(), DBError> {
     let users: Vec<String> = notify_users.split(",").map(|user| {user.to_string()}).collect();
     let id = Uuid::new_v4().to_string();
@@ -54,6 +57,7 @@ pub async fn create_notification(
             notify: users,
             notification_times: notification_times,
             channel: channel.to_string(),
+            timezone: Some(timezone.to_string()),
         },
     );
     save_db(&get_db_location(), db)

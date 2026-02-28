@@ -1,4 +1,3 @@
-pub mod calendar_loop;
 pub mod notification_loop;
 pub mod todo_loop;
 pub mod task_runner;

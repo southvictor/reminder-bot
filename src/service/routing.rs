@@ -5,15 +5,15 @@ use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Intent {
-    Notification,
+    CalendarEvent,
     Todolist,
+    Config,
     Unknown,
 }
 
 #[derive(Debug, Clone)]
 pub struct IntentResult {
     pub intent: Intent,
-    pub normalized_text: String,
 }
 
 #[async_trait]
@@ -43,22 +43,25 @@ impl OpenAIRouter {
 #[async_trait]
 impl IntentRouter for OpenAIRouter {
     async fn route(&self, text: &str) -> IntentResult {
-        match self.openai.generate_prompt(text, "intent_router").await {
+        match self
+            .openai
+            .generate_prompt(text, "intent_router", "America/New_York")
+            .await
+        {
             Ok(payload) => {
+                eprintln!("Intent router payload: {}", payload);
                 if let Some(result) = parse_router_payload(&payload) {
                     return result;
                 }
                 eprintln!("Intent router invalid payload: {}", payload);
                 IntentResult {
                     intent: Intent::Unknown,
-                    normalized_text: text.trim().to_string(),
                 }
             }
             Err(err) => {
                 eprintln!("Intent router call failed: {}", err);
                 IntentResult {
                     intent: Intent::Unknown,
-                    normalized_text: text.trim().to_string(),
                 }
             }
         }
@@ -68,24 +71,19 @@ impl IntentRouter for OpenAIRouter {
 #[derive(Debug, Deserialize)]
 struct RouterPayload {
     intent: String,
-    normalized_text: String,
 }
 
 fn parse_router_payload(payload: &str) -> Option<IntentResult> {
     let parsed: RouterPayload = serde_json::from_str(payload).ok()?;
     let intent_value = parsed.intent.trim().to_lowercase();
     let intent = match intent_value.as_str() {
-        "notification" => Intent::Notification,
+        "calendar_event" => Intent::CalendarEvent,
         "todolist" => Intent::Todolist,
+        "config" => Intent::Config,
         _ => Intent::Unknown,
     };
-    let normalized_text = parsed.normalized_text.trim().to_string();
-    if normalized_text.is_empty() {
-        return None;
-    }
     Some(IntentResult {
         intent,
-        normalized_text,
     })
 }
 
@@ -94,21 +92,47 @@ pub fn route_intent(text: &str) -> IntentResult {
     if normalized.is_empty() {
         return IntentResult {
             intent: Intent::Unknown,
-            normalized_text: normalized,
         };
     }
 
     if has_time_tokens(&normalized) {
         return IntentResult {
-            intent: Intent::Notification,
-            normalized_text: normalized,
+            intent: Intent::CalendarEvent,
+        };
+    }
+
+    if is_config_message(&normalized) {
+        return IntentResult {
+            intent: Intent::Config,
         };
     }
 
     IntentResult {
         intent: Intent::Todolist,
-        normalized_text: normalized,
     }
+}
+
+fn is_config_message(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    lower.contains("timezone")
+        || lower.contains("time zone")
+        || lower.contains("tz")
+        || lower.contains("eastern")
+        || lower.contains("central")
+        || lower.contains("mountain")
+        || lower.contains("pacific")
+        || lower.contains("est")
+        || lower.contains("edt")
+        || lower.contains("cst")
+        || lower.contains("cdt")
+        || lower.contains("mst")
+        || lower.contains("mdt")
+        || lower.contains("pst")
+        || lower.contains("pdt")
+        || lower.contains("utc")
+        || lower.contains("gmt")
+        || lower.contains("configure")
+        || lower.contains("config")
 }
 
 fn has_time_tokens(text: &str) -> bool {

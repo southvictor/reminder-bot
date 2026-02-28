@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use chrono::{DateTime, Duration, Utc};
+use chrono_tz::Tz;
 use memory_db::DB;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
@@ -17,7 +18,7 @@ pub type ActionId = String;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ActionType {
     Unknown,
-    CreateNotification,
+    CreateCalendarEvent,
     CreateTodo,
     ToolUse,
 }
@@ -42,6 +43,7 @@ pub struct NotificationDraft {
     pub extra_context: Option<String>,
     pub expires_at: DateTime<Utc>,
     pub message_id: Option<u64>,
+    pub timezone: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -106,9 +108,11 @@ impl ActionStore {
 #[derive(Debug)]
 pub enum ActionEvent {
     NotifyRequested {
-        text: String,
+        content: String,
+        time: DateTime<Utc>,
         user_id: String,
         channel_id: String,
+        timezone: String,
     },
     ApprovalConfirmed {
         action_id: String,
@@ -123,6 +127,13 @@ pub enum ActionEvent {
         user_id: String,
         context: String,
     },
+}
+
+fn format_time_in_timezone(time: DateTime<Utc>, timezone: &str) -> String {
+    match timezone.parse::<Tz>() {
+        Ok(tz) => time.with_timezone(&tz).format("%Y-%m-%d %H:%M %Z").to_string(),
+        Err(_) => time.to_rfc3339(),
+    }
 }
 
 pub struct ActionEngine {
@@ -150,51 +161,30 @@ impl ActionEngine {
     pub async fn handle_event(&self, event: ActionEvent) {
         match event {
             ActionEvent::NotifyRequested {
-                text,
+                content,
+                time,
                 user_id,
                 channel_id,
+                timezone,
             } => {
-                let payload = match self.openai.generate_prompt(&text, "notification").await {
-                    Ok(p) => p,
-                    Err(err) => {
-                        let _ = self.approval.update_status_message(
-                            &channel_id,
-                            &user_id,
-                            &format!("Failed to call OpenAI for notification: {}", err),
-                        ).await;
-                        return;
-                    }
-                };
-
-                let ai_notification: notification::AINotification = match serde_json::from_str(&payload) {
-                    Ok(r) => r,
-                    Err(err) => {
-                        let _ = self.approval.update_status_message(
-                            &channel_id,
-                            &user_id,
-                            &format!("Failed to parse notification JSON: {}", err),
-                        ).await;
-                        return;
-                    }
-                };
-
                 let now = Utc::now();
                 let pending_id = Uuid::new_v4().to_string();
                 let mut action = Action {
                     id: pending_id,
-                    action_type: ActionType::CreateNotification,
+                    action_type: ActionType::CreateCalendarEvent,
                     status: ActionStatus::AwaitingApproval,
                     user_id: user_id.clone(),
                     channel_id: channel_id.clone(),
                     payload: Some(ActionPayload::NotificationDraft(NotificationDraft {
                         user_id: user_id.clone(),
                         channel_id: channel_id.clone(),
-                        content: ai_notification.content,
-                        time: ai_notification.time,
-                        original_text: text.clone(),
+                        content: content.clone(),
+                        time,
+                        original_text: content.clone(),
                         extra_context: None,
                         expires_at: now + Duration::minutes(5),
                         message_id: None,
+                        timezone: timezone.clone(),
                     })),
                     created_at: now,
                     updated_at: now,
@@ -247,6 +237,7 @@ impl ActionEngine {
                     &action.user_id,
                     &draft.time,
                     &action.channel_id,
+                    &draft.timezone,
                 )
                 .await;
 
@@ -254,9 +245,10 @@ impl ActionEngine {
                     action.status = ActionStatus::Completed;
                     action.updated_at = Utc::now();
                     let message = if let Some(draft) = action.notification_draft() {
+                        let display_time = format_time_in_timezone(draft.time, &draft.timezone);
                         format!(
                             "Confirmed! I'll notify you: \"{}\" at {}",
-                            draft.content, draft.time
+                            draft.content, display_time
                         )
                     } else {
                         "Confirmed notification.".to_string()
@@ -265,11 +257,14 @@ impl ActionEngine {
                 } else {
                     action.status = ActionStatus::Failed;
                     action.updated_at = Utc::now();
-                    let _ = self.approval.update_status_message(
-                        &action.channel_id,
-                        &action.user_id,
-                        "Failed to persist notification.",
-                    ).await;
+                    let _ = self
+                        .approval
+                        .update_status_message(
+                            &action.channel_id,
+                            &action.user_id,
+                            "Failed to persist notification.",
+                        )
+                        .await;
                 }
 
                 let mut store = self.store.lock().await;
@@ -328,9 +323,14 @@ impl ActionEngine {
                     );
                 }
 
+                let timezone = action
+                    .notification_draft()
+                    .map(|draft| draft.timezone.clone())
+                    .unwrap_or_else(|| "America/New_York".to_string());
+
                 let refreshed = match self
                     .openai
-                    .generate_prompt(&combined_prompt, "notification_correction")
+                    .generate_prompt(&combined_prompt, "calendar_event_correction", &timezone)
                     .await
                 {
                     Ok(payload) => serde_json::from_str::<notification::AINotification>(&payload).ok(),

@@ -7,6 +7,7 @@ pub trait OpenAIClient: Send + Sync {
         &self,
         prompt: &str,
         prompt_type: &str,
+        timezone: &str,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>>;
 }
 
@@ -23,8 +24,9 @@ impl OpenAIService {
         &self,
         prompt: &str,
         prompt_type: &str,
+        timezone: &str,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-        openai_client::generate_openai_prompt(prompt, prompt_type, &self.api_key).await
+        openai_client::generate_openai_prompt(prompt, prompt_type, timezone, &self.api_key).await
     }
 }
 
@@ -34,7 +36,8 @@ impl OpenAIClient for OpenAIService {
         &self,
         prompt: &str,
         prompt_type: &str,
+        timezone: &str,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-        self.generate_prompt_internal(prompt, prompt_type).await
+        self.generate_prompt_internal(prompt, prompt_type, timezone).await
     }
 }

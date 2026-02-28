@@ -2,10 +2,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use chrono::TimeZone;
-use reminderBot::handlers::action::{Action, ActionEngine, ActionEvent, ActionPayload, ActionStatus, ActionStore, ActionType, NotificationDraft};
+use reminderBot::handlers::action::{
+    Action, ActionEngine, ActionEvent, ActionPayload, ActionStatus, ActionStore, ActionType,
+    NotificationDraft,
+};
+use reminderBot::models::notification::Notification;
 use reminderBot::service::approval_prompt::ApprovalPromptService;
 use reminderBot::service::openai_service::OpenAIClient;
-use reminderBot::models::notification::Notification;
 use tokio::sync::Mutex;
 
 struct FakeOpenAI {
@@ -18,6 +21,7 @@ impl OpenAIClient for FakeOpenAI {
         &self,
         _prompt: &str,
         _prompt_type: &str,
+        _timezone: &str,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         match &self.response {
             Ok(body) => Ok(body.clone()),
@@ -61,9 +65,11 @@ async fn approval_confirmed_creates_notification() {
 
     engine
         .handle_event(ActionEvent::NotifyRequested {
-            text: "call mom tomorrow".to_string(),
+            content: "call mom".to_string(),
+            time: chrono::Utc.with_ymd_and_hms(2026, 2, 3, 12, 0, 0).unwrap(),
             user_id: "@u".to_string(),
             channel_id: "123".to_string(),
+            timezone: "America/New_York".to_string(),
         })
         .await;
 
@@ -84,6 +90,7 @@ async fn approval_confirmed_creates_notification() {
     let notification = db_guard.values().next().unwrap();
     assert_eq!(notification.content, "call mom");
     assert_eq!(notification.channel, "123");
+    assert_eq!(notification.timezone.as_deref(), Some("America/New_York"));
 }
 
 #[tokio::test]
@@ -105,12 +112,13 @@ async fn approval_canceled_marks_rejected() {
         extra_context: None,
         expires_at: chrono::Utc.with_ymd_and_hms(2026, 2, 3, 12, 5, 0).unwrap(),
         message_id: None,
+        timezone: "America/New_York".to_string(),
     };
 
     let action_id = "a1".to_string();
     let action = Action {
         id: action_id.clone(),
-        action_type: ActionType::CreateNotification,
+        action_type: ActionType::CreateCalendarEvent,
         status: ActionStatus::AwaitingApproval,
         user_id: "@u".to_string(),
         channel_id: "123".to_string(),

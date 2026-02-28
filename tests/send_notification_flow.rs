@@ -18,6 +18,7 @@ impl OpenAIClient for FakeOpenAI {
         &self,
         _prompt: &str,
         _prompt_type: &str,
+        _timezone: &str,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         match &self.response {
             Ok(body) => Ok(body.clone()),
@@ -59,6 +60,7 @@ async fn notification_tick_sends_and_expires_notification() {
             notify: vec!["@u".to_string()],
             notification_times: vec![now - chrono::Duration::minutes(1)],
             channel: "123".to_string(),
+            timezone: Some("America/New_York".to_string()),
         },
     );
 

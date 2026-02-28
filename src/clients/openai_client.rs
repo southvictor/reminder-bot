@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
-use chrono::Utc;
-use chrono::DateTime;
+use chrono::{DateTime, Utc};
+use chrono_tz::{America::New_York, Tz};
 use reqwest;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -32,21 +32,28 @@ struct Message {
     content: String,
 }
 
+fn normalize_timezone(timezone: &str) -> Tz {
+    timezone.parse::<Tz>().unwrap_or(New_York)
+}
 
 pub async fn generate_openai_prompt(
     prompt: &str,
     prompt_type: &str,
+    timezone: &str,
     api_key: &str,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let now: DateTime<Utc> = Utc::now();
+    let tz = normalize_timezone(timezone);
+    let now_local = now.with_timezone(&tz).to_rfc3339();
+    let tz_name = tz.name();
 
     let full_prompt = match prompt_type {
-        "notification" => format!(
-            "You are a notification extraction engine.\n\
-             Current date and time (UTC): {now}\n\
-             User timezone: America/New_York\n\
+        "calendar_event_parser" => format!(
+            "You are a calendar event extraction engine.\n\
+             Current date and time ({tz_name}): {now}\n\
+             User timezone: {tz_name}\n\
              Task: From the user message below, extract:\n\
-             - \"content\": the core notification text with extraneous scheduling words removed. For example:\n\
+             - \"content\": the core calendar event text with extraneous scheduling words removed. For example:\n\
                - \"buy eggs tomorrow\" -> \"buy eggs\"\n\
                - \"notify me to call mom at 5\" -> \"call mom\"\n\
              - \"time\": an RFC3339 datetime string in the user's timezone.\n\
@@ -65,57 +72,73 @@ pub async fn generate_openai_prompt(
              - The JSON shape must be exactly:\n\
              {{\"content\":\"<string>\",\"time\":\"<RFC3339 datetime>\"}}\n\
              User message: \"{user_prompt}\"",
-            now = now.to_rfc3339(),
+            tz_name = tz_name,
+            now = now_local,
             user_prompt = prompt
         ),
-        "notification_correction" => format!(
-            "You are a notification correction engine.\n\
-             Current date and time (UTC): {now}\n\
-             User timezone: America/New_York\n\
-             Task: Given the original notification request and a user-provided correction note, output a corrected notification.\n\
+        "calendar_event_correction" => format!(
+            "You are a calendar event correction engine.\n\
+             Current date and time ({tz_name}): {now}\n\
+             User timezone: {tz_name}\n\
+             Task: Given the original calendar event request and a user-provided correction note, output a corrected calendar event.\n\
              Rules:\n\
-             - The correction note is NOT notification content. It is only for fixing the date/time or clarifying intent.\n\
-             - Preserve the original notification content unless the correction explicitly changes it.\n\
+             - The correction note is NOT calendar event content. It is only for fixing the date/time or clarifying intent.\n\
+             - Preserve the original calendar event content unless the correction explicitly changes it.\n\
              - If the correction only adjusts time (e.g. \"actually I meant this Saturday\"), update only the time.\n\
              - Output ONLY raw JSON, no prose, markdown, or code fences.\n\
              - The JSON shape must be exactly:\n\
              {{\"content\":\"<string>\",\"time\":\"<RFC3339 datetime>\"}}\n\
              Original request: \"{user_prompt}\"",
-            now = now.to_rfc3339(),
+            tz_name = tz_name,
+            now = now_local,
             user_prompt = prompt
         ),
-        "notification_message" => format!(
-            "You are a notification message formatter.\n\
-             Current date and time (UTC): {now}\n\
-             Task: Given the structured notification info below, write a short, natural English notification message to send to a user.\n\
+        "calendar_event_message" => format!(
+            "You are a calendar event message formatter.\n\
+             Current date and time ({tz_name}): {now}\n\
+             Task: Given the structured calendar event info below, write a short, natural English calendar event message to send to a user.\n\
              Rules:\n\
              - Address the user(s) in second person (\"you\").\n\
-             - Mention the event time explicitly.\n\
-             - Include the notification content naturally.\n\
+             - Mention the event time explicitly in the user's timezone.\n\
+             - Include the calendar event content naturally.\n\
              - If hours remaining is provided, include it in a friendly way.\n\
              - Keep it to 1–2 sentences, no markdown, no lists, no JSON.\n\
              - Do NOT wrap the output in quotes.\n\
              Structured input:\n\
              {structured}",
-            now = now.to_rfc3339(),
+            tz_name = tz_name,
+            now = now_local,
             structured = prompt
         ),
         "intent_router" => format!(
-            "You are an intent router for a notification bot.\n\
-             Current date and time (UTC): {now}\n\
-             User timezone: America/New_York\n\
-             Task: Classify the user's message into one of these intents:\n\
-             - notification: requests that include a time/date for a notification\n\
-             - todolist: requests to create or update a todo list without a time\n\
+            "You are an intent router for a helper (jarvis from iron man) bot.\n\
+             I want you do classify the user's message into one of these intents:\n\
+             - calendar_event: user wants to be reminded about a specific event at a specific time\n\
+             - todolist: user wants to keep track of tasks that they need to do at some unspecified time\n\
+             - config: requests to change system configuration (e.g., timezone)\n\
              - unknown: unclear or missing time/action\n\
-             Rules:\n\
-             - If the message contains any explicit or implicit time/date (e.g., \"tomorrow\", \"next week\", weekdays, months, \"at 5pm\"), choose notification.\n\
-             - If the message contains do, or finish, or check or similar words, its a todolist. \n\
              Output ONLY raw JSON, no prose, markdown, or code fences.\n\
              The JSON shape must be exactly:\n\
-             {{\"intent\":\"notification|todolist|unknown\",\"normalized_text\":\"<cleaned user text>\"}}\n\
+             {{\"intent\":\"calendar_event or todolist or config or unknown\"}}\n\
              User message: \"{user_prompt}\"",
-            now = now.to_rfc3339(),
+            user_prompt = prompt
+        ),
+        "config_parser" => format!(
+            r#"You are a configuration parser for a calendar event bot.
+Task: Extract a configuration change from the user message.
+Supported config kinds:
+- timezone
+Rules:
+- If the user says Eastern time, map to America/New_York.
+- If the user says Central time, map to America/Chicago.
+- If the user says Mountain time, map to America/Denver.
+- If the user says Pacific time, map to America/Los_Angeles.
+- If they give a valid IANA timezone, keep it.
+- If unclear, default to America/New_York.
+Output ONLY raw JSON, no prose, markdown, or code fences.
+The JSON shape must be exactly:
+{{"kind":"timezone","value":"<IANA timezone>"}}
+User message: "{user_prompt}""#,
             user_prompt = prompt
         ),
         _ => return Err("Not a valid base prompt".to_string().into()),
@@ -130,20 +153,20 @@ async fn query_openai(
     api_key: &str,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let system_message = match prompt_type {
-        "notification" | "notification_correction" => {
-            "You are a strict JSON notification extraction engine. You read instructions and a user message and reply ONLY with a single JSON object, with no markdown, no backticks, and no extra text. If the user gives an explicit date (e.g. \"December 6th\"), you preserve that exact month and day and only fill in missing year/time according to the instructions."
+        "calendar_event_parser" | "calendar_event_correction" => {
+            "You are a strict JSON calendar event extraction engine. You read instructions and a user message and reply ONLY with a single JSON object, with no markdown, no backticks, and no extra text. If the user gives an explicit date (e.g. \"December 6th\"), you preserve that exact month and day and only fill in missing year/time according to the instructions."
         }
-        "intent_router" => {
-            "You are a strict JSON intent router. Reply ONLY with a single JSON object, with no markdown, no backticks, and no extra text."
+        "intent_router" | "config_parser" | "todo_parser" => {
+            "You are a strict JSON router. Reply ONLY with a single JSON object, with no markdown, no backticks, and no extra text."
         }
-        "notification_message" => {
-            "You are a notification message formatter. Reply with plain text only (no JSON, no markdown, no quotes)."
+        "calendar_event_message" => {
+            "You are a calendar event message formatter. Reply with plain text only (no JSON, no markdown, no quotes)."
         }
         _ => "You are a helpful assistant.",
     };
 
     let request: OpenAIRequest = OpenAIRequest {
-        model: "gpt-4o-mini".to_string(),
+        model: "gpt-4o".to_string(),
         messages: vec![
             OpenAIMessage {
                 role: "system".to_string(),
@@ -161,34 +184,21 @@ async fn query_openai(
     let client = reqwest::Client::new();
     let response = client
         .post("https://api.openai.com/v1/chat/completions")
-        .header("Authorization", format!("Bearer {}", api_key))
         .header("Content-Type", "application/json")
+        .header("Authorization", format!("Bearer {}", api_key))
         .json(&request)
         .send()
         .await?;
 
+    if !response.status().is_success() {
         let status = response.status();
-        let text = response.text().await?; // read the body once
-        
-        if !status.is_success() {
-            // Non-2xx response — show raw body for debugging
-            println!("Error {}: {}", status, text);
-            return Err(format!("Request failed with status {}", status).into());
-        }
-        
-        // Try to parse JSON
-        let parsed: OpenAIResponse = serde_json::from_str(&text).map_err(|e| {
-            format!(
-                "Failed to parse JSON: {}\nRaw body: {}",
-                e, text
-            )
-        })?;
-        
-        // Extract the choice content
-        if let Some(choice) = parsed.choices.first() {
-            Ok(choice.message.content.clone())
-        } else {
-            println!("No choices found in response.\nRaw body:\n{}", text);
-            Err("No response from OpenAI".to_string().into())
-        }
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!("OpenAI API error: {}: {}", status, body).into());
+    }
+
+    let response_body: OpenAIResponse = response.json().await?;
+    let Some(choice) = response_body.choices.first() else {
+        return Err("OpenAI API returned no choices".into());
+    };
+    Ok(choice.message.content.clone())
 }

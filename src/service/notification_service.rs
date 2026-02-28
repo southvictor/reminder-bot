@@ -1,15 +1,24 @@
 use chrono::{DateTime, Utc};
+use chrono_tz::Tz;
 use memory_db::{DB, DBError};
 use serenity::builder::{CreateActionRow, CreateButton};
 
 use crate::handlers::action::NotificationDraft;
 use crate::models::notification::{self, Notification};
 
+fn format_time_in_timezone(time: DateTime<Utc>, timezone: &str) -> String {
+    match timezone.parse::<Tz>() {
+        Ok(tz) => time.with_timezone(&tz).format("%Y-%m-%d %H:%M %Z").to_string(),
+        Err(_) => time.to_rfc3339(),
+    }
+}
+
 pub fn render_pending_message(pending: &NotificationDraft) -> String {
+    let display_time = format_time_in_timezone(pending.time, &pending.timezone);
     let mut body: String = format!(
         "Please confirm your notification:\nContent: {}\nTime: {}",
         pending.content,
-        pending.time
+        display_time
     );
     if let Some(ctx) = &pending.extra_context {
         if !ctx.trim().is_empty() {
@@ -42,8 +51,9 @@ impl NotificationService {
         notify_users: &String,
         expires_at: &DateTime<Utc>,
         channel: &String,
+        timezone: &str,
     ) -> Result<(), DBError> {
-        notification::create_notification(db, content, notify_users, expires_at, channel).await
+        notification::create_notification(db, content, notify_users, expires_at, channel, timezone).await
     }
 }
 
@@ -71,7 +81,7 @@ mod tests {
         let channel = "123".to_string();
         let expires_at = Utc.with_ymd_and_hms(2026, 2, 10, 12, 0, 0).unwrap();
 
-        NotificationService::create(&mut db, &content, &notify_users, &expires_at, &channel)
+        NotificationService::create(&mut db, &content, &notify_users, &expires_at, &channel, "America/New_York")
             .await
             .expect("create notification should succeed");
 
@@ -80,6 +90,7 @@ mod tests {
         assert_eq!(notification.content, content);
         assert_eq!(notification.channel, channel);
         assert_eq!(notification.notify, vec!["@user1".to_string(), "@user2".to_string()]);
+        assert_eq!(notification.timezone.as_deref(), Some("America/New_York"));
 
         let expected = vec![
             expires_at - Duration::days(1),
@@ -99,6 +110,7 @@ mod tests {
             extra_context: Some("add eggs".to_string()),
             expires_at: Utc.with_ymd_and_hms(2026, 2, 10, 12, 5, 0).unwrap(),
             message_id: None,
+            timezone: "America/New_York".to_string(),
         };
 
         let body = render_pending_message(&pending);

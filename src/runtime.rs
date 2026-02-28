@@ -7,9 +7,9 @@ use tokio::sync::Mutex;
 use crate::handlers::action::{ActionEngine, ActionStore};
 use crate::handlers::discord;
 use std::collections::HashMap;
+use crate::models::config::UserConfig;
 use crate::models::notification::Notification;
 use crate::models::todo::TodoItem;
-use crate::tasks::calendar_loop;
 use crate::tasks::notification_loop;
 use crate::tasks::todo_loop;
 use crate::tasks::task_runner::TaskRunner;
@@ -24,6 +24,7 @@ use crate::service::routing::OpenAIRouter;
 pub async fn run_api(
     shared_db: Arc<Mutex<DB<Notification>>>,
     shared_todo_db: Arc<Mutex<DB<TodoItem>>>,
+    shared_config_db: Arc<Mutex<DB<UserConfig>>>,
     discord_client_secret: String,
     openai_api_key: String,
 ) {
@@ -50,11 +51,6 @@ pub async fn run_api(
             });
         }
     });
-    task_runner.add_task(|| {
-        tokio::spawn(async move {
-            calendar_loop::run_calendar_loop().await;
-        });
-    });
     task_runner.start_all();
 
     let action_store = Arc::new(Mutex::new(ActionStore::new()));
@@ -70,7 +66,7 @@ pub async fn run_api(
         Arc::new(DiscordApprovalPromptService::new(worker_secret.clone()));
     let engine = ActionEngine::new(
         action_store.clone(),
-        worker_openai,
+        worker_openai.clone(),
         approval_service,
         shared_db.clone(),
     );
@@ -83,9 +79,11 @@ pub async fn run_api(
     let mut client = serenity::Client::builder(token, intents)
         .event_handler(discord::BotHandler::new(
             shared_todo_db,
+            shared_config_db,
             event_bus,
             sessions,
             router,
+            worker_openai,
         ))
         .await
         .expect("Error creating Serenity client");

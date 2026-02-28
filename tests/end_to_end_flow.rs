@@ -5,6 +5,7 @@ use reminderBot::handlers::action::{Action, ActionEngine, ActionEvent, ActionSto
 use reminderBot::events::queue::EventBus;
 use reminderBot::events::worker::run_event_worker;
 use reminderBot::handlers::discord::BotHandler;
+use reminderBot::models::config::UserConfig;
 use reminderBot::models::notification::Notification;
 use reminderBot::models::todo::TodoItem;
 use reminderBot::service::approval_prompt::ApprovalPromptService;
@@ -35,11 +36,18 @@ impl OpenAIClient for FakeOpenAI {
     async fn generate_prompt(
         &self,
         _prompt: &str,
-        _prompt_type: &str,
+        prompt_type: &str,
+        _timezone: &str,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-        match &self.response {
-            Ok(body) => Ok(body.clone()),
-            Err(err) => Err(err.clone().into()),
+        match prompt_type {
+            "intent_router" => Ok("{\"intent\":\"calendar_event\"}".to_string()),
+            "calendar_event_parser" => Ok("{\"content\":\"call mom\",\"time\":\"2026-02-03T12:00:00Z\"}".to_string()),
+            "todo_parser" => Ok("{\"content\":\"buy milk\"}".to_string()),
+            "config_parser" => Ok("{\"kind\":\"timezone\",\"value\":\"America/New_York\"}".to_string()),
+            _ => match &self.response {
+                Ok(body) => Ok(body.clone()),
+                Err(err) => Err(err.clone().into()),
+            },
         }
     }
 }
@@ -85,6 +93,7 @@ impl ApprovalPromptService for CapturingApprovalPrompt {
 
 #[tokio::test]
 async fn end_to_end_notify_confirm_flow() {
+    let _guard = prepare_db_location("end_to_end_notify_confirm_flow");
     let (bus, rx) = EventBus::new(16);
     let store = Arc::new(Mutex::new(ActionStore::new()));
     let openai = Arc::new(FakeOpenAI {
@@ -97,7 +106,7 @@ async fn end_to_end_notify_confirm_flow() {
 
     let engine = ActionEngine::new(
         store.clone(),
-        openai,
+        openai.clone(),
         approval.clone(),
         notification_db.clone(),
     );
@@ -106,13 +115,14 @@ async fn end_to_end_notify_confirm_flow() {
 
     let router = Arc::new(HeuristicRouter);
     let todo_db = Arc::new(Mutex::new(HashMap::<String, TodoItem>::new()));
+    let config_db = Arc::new(Mutex::new(HashMap::<String, UserConfig>::new()));
     let sessions = Arc::new(Mutex::new(HashMap::new()));
-    let handler = BotHandler::new(todo_db, bus.clone(), sessions, router);
+    let handler = BotHandler::new(todo_db, config_db, bus.clone(), sessions, router, openai);
 
     let decision = handler
         .handle_notify_internal("call mom tomorrow at 5", "@u", "123")
         .await;
-    assert!(matches!(decision, reminderBot::service::notify_flow::NotifyDecision::EmitNotify { .. }));
+    assert!(matches!(decision, reminderBot::service::notify_flow::NotifyDecision::EmitCalendarEvent { .. }));
 
     let action_id = timeout(Duration::from_secs(2), async {
         loop {
@@ -140,10 +150,12 @@ async fn end_to_end_notify_confirm_flow() {
     let notification = db.values().next().unwrap();
     assert_eq!(notification.content, "call mom");
     assert_eq!(notification.channel, "123");
+    assert_eq!(notification.timezone.as_deref(), Some("America/New_York"));
 }
 
 #[tokio::test]
 async fn end_to_end_notify_rejection_flow() {
+    let _guard = prepare_db_location("end_to_end_notify_rejection_flow");
     let (bus, rx) = EventBus::new(16);
     let store = Arc::new(Mutex::new(ActionStore::new()));
     let openai = Arc::new(FakeOpenAI {
@@ -156,7 +168,7 @@ async fn end_to_end_notify_rejection_flow() {
 
     let engine = ActionEngine::new(
         store.clone(),
-        openai,
+        openai.clone(),
         approval.clone(),
         notification_db.clone(),
     );
@@ -165,13 +177,14 @@ async fn end_to_end_notify_rejection_flow() {
 
     let router = Arc::new(HeuristicRouter);
     let todo_db = Arc::new(Mutex::new(HashMap::<String, TodoItem>::new()));
+    let config_db = Arc::new(Mutex::new(HashMap::<String, UserConfig>::new()));
     let sessions = Arc::new(Mutex::new(HashMap::new()));
-    let handler = BotHandler::new(todo_db, bus.clone(), sessions, router);
+    let handler = BotHandler::new(todo_db, config_db, bus.clone(), sessions, router, openai);
 
     let decision = handler
         .handle_notify_internal("call mom tomorrow at 5", "@u", "123")
         .await;
-    assert!(matches!(decision, reminderBot::service::notify_flow::NotifyDecision::EmitNotify { .. }));
+    assert!(matches!(decision, reminderBot::service::notify_flow::NotifyDecision::EmitCalendarEvent { .. }));
 
     let action_id = timeout(Duration::from_secs(2), async {
         loop {
@@ -200,6 +213,7 @@ async fn end_to_end_notify_rejection_flow() {
 
 #[tokio::test]
 async fn end_to_end_notify_context_correction_flow() {
+    let _guard = prepare_db_location("end_to_end_notify_context_correction_flow");
     let (bus, rx) = EventBus::new(16);
     let store = Arc::new(Mutex::new(ActionStore::new()));
     let openai = Arc::new(FakeOpenAI {
@@ -212,7 +226,7 @@ async fn end_to_end_notify_context_correction_flow() {
 
     let engine = ActionEngine::new(
         store.clone(),
-        openai,
+        openai.clone(),
         approval.clone(),
         notification_db.clone(),
     );
@@ -221,13 +235,14 @@ async fn end_to_end_notify_context_correction_flow() {
 
     let router = Arc::new(HeuristicRouter);
     let todo_db = Arc::new(Mutex::new(HashMap::<String, TodoItem>::new()));
+    let config_db = Arc::new(Mutex::new(HashMap::<String, UserConfig>::new()));
     let sessions = Arc::new(Mutex::new(HashMap::new()));
-    let handler = BotHandler::new(todo_db, bus.clone(), sessions, router);
+    let handler = BotHandler::new(todo_db, config_db, bus.clone(), sessions, router, openai);
 
     let decision = handler
         .handle_notify_internal("call mom tomorrow at 5", "@u", "123")
         .await;
-    assert!(matches!(decision, reminderBot::service::notify_flow::NotifyDecision::EmitNotify { .. }));
+    assert!(matches!(decision, reminderBot::service::notify_flow::NotifyDecision::EmitCalendarEvent { .. }));
 
     let action_id = timeout(Duration::from_secs(2), async {
         loop {
@@ -287,8 +302,10 @@ async fn end_to_end_unknown_message_flow() {
     let (bus, _rx) = EventBus::new(16);
     let router = Arc::new(HeuristicRouter);
     let todo_db = Arc::new(Mutex::new(HashMap::<String, TodoItem>::new()));
+    let config_db = Arc::new(Mutex::new(HashMap::<String, UserConfig>::new()));
     let sessions = Arc::new(Mutex::new(HashMap::new()));
-    let handler = BotHandler::new(todo_db, bus, sessions, router);
+    let openai = Arc::new(FakeOpenAI { response: Ok("".to_string()) });
+    let handler = BotHandler::new(todo_db, config_db, bus, sessions, router, openai);
 
     let decision = handler
         .handle_notify_internal("just a phrase", "@u", "123")

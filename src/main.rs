@@ -14,6 +14,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use memory_db::load_db;
 use memory_db::DB;
+use crate::models::config as user_config;
 use crate::models::notification;
 use crate::models::todo;
 use crate::config::AppConfig;
@@ -32,6 +33,10 @@ async fn main() {
     let todo_db: DB<todo::TodoItem> =
         load_db(&todo::get_db_location()).unwrap_or_else(|_| HashMap::new());
     let shared_todo_db = Arc::new(tokio::sync::Mutex::new(todo_db));
+    let config_db: DB<user_config::UserConfig> =
+        load_db(&user_config::get_db_location()).unwrap_or_else(|_| HashMap::new());
+    let shared_config_db = Arc::new(tokio::sync::Mutex::new(config_db));
+
     if let Some(run_mode) = get_prop("RUN_MODE") {
         if run_mode != "api" {
             panic!("Unsupported RUN_MODE {}. Only api mode is supported.", run_mode);
@@ -45,6 +50,7 @@ async fn main() {
     runtime::run_api(
         shared_db.clone(),
         shared_todo_db.clone(),
+        shared_config_db.clone(),
         discord_client_secret,
         openai_api_key,
     )
