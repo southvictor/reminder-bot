@@ -5,27 +5,9 @@ use std::sync::{Mutex, OnceLock};
 use chrono::TimeZone;
 use reminderBot::models::notification::Notification;
 use reminderBot::tasks::notification_loop::{notification_tick, MessageSender};
-use reminderBot::service::openai_service::OpenAIClient;
 use tokio::sync::Mutex as TokioMutex;
-
-struct FakeOpenAI {
-    response: Result<String, String>,
-}
-
-#[serenity::async_trait]
-impl OpenAIClient for FakeOpenAI {
-    async fn generate_prompt(
-        &self,
-        _prompt: &str,
-        _prompt_type: &str,
-        _timezone: &str,
-    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-        match &self.response {
-            Ok(body) => Ok(body.clone()),
-            Err(err) => Err(err.clone().into()),
-        }
-    }
-}
+mod canned_openai;
+use canned_openai::CannedOpenAI;
 
 struct MockSender {
     sent: TokioMutex<Vec<(String, String)>>,
@@ -64,9 +46,7 @@ async fn notification_tick_sends_and_expires_notification() {
         },
     );
 
-    let openai = FakeOpenAI {
-        response: Ok("Remember to call mom at noon.".to_string()),
-    };
+    let openai = CannedOpenAI::from_file("tests/fixtures/openai_canned_notification_message.json");
     let sender = MockSender {
         sent: TokioMutex::new(Vec::new()),
     };

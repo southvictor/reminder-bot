@@ -9,8 +9,9 @@ use reminderBot::models::config::UserConfig;
 use reminderBot::models::notification::Notification;
 use reminderBot::models::todo::TodoItem;
 use reminderBot::service::approval_prompt::ApprovalPromptService;
-use reminderBot::service::openai_service::OpenAIClient;
-use reminderBot::service::routing::HeuristicRouter;
+use reminderBot::service::routing::OpenAIRouter;
+mod canned_openai;
+use canned_openai::CannedOpenAI;
 use std::sync::Mutex as StdMutex;
 use tokio::sync::Mutex;
 use tokio::time::{sleep, timeout, Duration};
@@ -25,31 +26,6 @@ fn prepare_db_location(test_name: &str) -> std::sync::MutexGuard<'static, ()> {
         std::env::set_var("DB_LOCATION", &base);
     }
     guard
-}
-
-struct FakeOpenAI {
-    response: Result<String, String>,
-}
-
-#[serenity::async_trait]
-impl OpenAIClient for FakeOpenAI {
-    async fn generate_prompt(
-        &self,
-        _prompt: &str,
-        prompt_type: &str,
-        _timezone: &str,
-    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-        match prompt_type {
-            "intent_router" => Ok("{\"intent\":\"calendar_event\"}".to_string()),
-            "calendar_event_parser" => Ok("{\"content\":\"call mom\",\"time\":\"2026-02-03T12:00:00Z\"}".to_string()),
-            "todo_parser" => Ok("{\"content\":\"buy milk\"}".to_string()),
-            "config_parser" => Ok("{\"kind\":\"timezone\",\"value\":\"America/New_York\"}".to_string()),
-            _ => match &self.response {
-                Ok(body) => Ok(body.clone()),
-                Err(err) => Err(err.clone().into()),
-            },
-        }
-    }
 }
 
 struct CapturingApprovalPrompt {
@@ -94,13 +70,9 @@ impl ApprovalPromptService for CapturingApprovalPrompt {
 #[tokio::test]
 async fn end_to_end_notify_confirm_flow() {
     let _guard = prepare_db_location("end_to_end_notify_confirm_flow");
+    let openai = Arc::new(CannedOpenAI::from_file("tests/fixtures/openai_canned_calendar_event.json"));
     let (bus, rx) = EventBus::new(16);
     let store = Arc::new(Mutex::new(ActionStore::new()));
-    let openai = Arc::new(FakeOpenAI {
-        response: Ok(
-            "{\"content\":\"call mom\",\"time\":\"2026-02-03T12:00:00Z\"}".to_string(),
-        ),
-    });
     let approval = Arc::new(CapturingApprovalPrompt::new());
     let notification_db = Arc::new(Mutex::new(HashMap::<String, Notification>::new()));
 
@@ -113,7 +85,7 @@ async fn end_to_end_notify_confirm_flow() {
 
     let worker = tokio::spawn(run_event_worker(rx, engine));
 
-    let router = Arc::new(HeuristicRouter);
+    let router = Arc::new(OpenAIRouter::new(openai.clone()));
     let todo_db = Arc::new(Mutex::new(HashMap::<String, TodoItem>::new()));
     let config_db = Arc::new(Mutex::new(HashMap::<String, UserConfig>::new()));
     let sessions = Arc::new(Mutex::new(HashMap::new()));
@@ -156,13 +128,9 @@ async fn end_to_end_notify_confirm_flow() {
 #[tokio::test]
 async fn end_to_end_notify_rejection_flow() {
     let _guard = prepare_db_location("end_to_end_notify_rejection_flow");
+    let openai = Arc::new(CannedOpenAI::from_file("tests/fixtures/openai_canned_calendar_event.json"));
     let (bus, rx) = EventBus::new(16);
     let store = Arc::new(Mutex::new(ActionStore::new()));
-    let openai = Arc::new(FakeOpenAI {
-        response: Ok(
-            "{\"content\":\"call mom\",\"time\":\"2026-02-03T12:00:00Z\"}".to_string(),
-        ),
-    });
     let approval = Arc::new(CapturingApprovalPrompt::new());
     let notification_db = Arc::new(Mutex::new(HashMap::<String, Notification>::new()));
 
@@ -175,7 +143,7 @@ async fn end_to_end_notify_rejection_flow() {
 
     let worker = tokio::spawn(run_event_worker(rx, engine));
 
-    let router = Arc::new(HeuristicRouter);
+    let router = Arc::new(OpenAIRouter::new(openai.clone()));
     let todo_db = Arc::new(Mutex::new(HashMap::<String, TodoItem>::new()));
     let config_db = Arc::new(Mutex::new(HashMap::<String, UserConfig>::new()));
     let sessions = Arc::new(Mutex::new(HashMap::new()));
@@ -214,13 +182,9 @@ async fn end_to_end_notify_rejection_flow() {
 #[tokio::test]
 async fn end_to_end_notify_context_correction_flow() {
     let _guard = prepare_db_location("end_to_end_notify_context_correction_flow");
+    let openai = Arc::new(CannedOpenAI::from_file("tests/fixtures/openai_canned_calendar_event_context.json"));
     let (bus, rx) = EventBus::new(16);
     let store = Arc::new(Mutex::new(ActionStore::new()));
-    let openai = Arc::new(FakeOpenAI {
-        response: Ok(
-            "{\"content\":\"call mom\",\"time\":\"2026-02-03T12:00:00Z\"}".to_string(),
-        ),
-    });
     let approval = Arc::new(CapturingApprovalPrompt::new());
     let notification_db = Arc::new(Mutex::new(HashMap::<String, Notification>::new()));
 
@@ -233,7 +197,7 @@ async fn end_to_end_notify_context_correction_flow() {
 
     let worker = tokio::spawn(run_event_worker(rx, engine));
 
-    let router = Arc::new(HeuristicRouter);
+    let router = Arc::new(OpenAIRouter::new(openai.clone()));
     let todo_db = Arc::new(Mutex::new(HashMap::<String, TodoItem>::new()));
     let config_db = Arc::new(Mutex::new(HashMap::<String, UserConfig>::new()));
     let sessions = Arc::new(Mutex::new(HashMap::new()));
@@ -300,11 +264,11 @@ async fn end_to_end_notify_context_correction_flow() {
 async fn end_to_end_unknown_message_flow() {
     let _guard = prepare_db_location("end_to_end_unknown_message_flow");
     let (bus, _rx) = EventBus::new(16);
-    let router = Arc::new(HeuristicRouter);
+    let openai = Arc::new(CannedOpenAI::from_file("tests/fixtures/openai_canned_unknown.json"));
+    let router = Arc::new(OpenAIRouter::new(openai.clone()));
     let todo_db = Arc::new(Mutex::new(HashMap::<String, TodoItem>::new()));
     let config_db = Arc::new(Mutex::new(HashMap::<String, UserConfig>::new()));
     let sessions = Arc::new(Mutex::new(HashMap::new()));
-    let openai = Arc::new(FakeOpenAI { response: Ok("".to_string()) });
     let handler = BotHandler::new(todo_db, config_db, bus, sessions, router, openai);
 
     let decision = handler
@@ -314,7 +278,7 @@ async fn end_to_end_unknown_message_flow() {
 
     assert!(matches!(
         decision,
-        reminderBot::service::notify_flow::NotifyDecision::EmitTodo { .. }
+        reminderBot::service::notify_flow::NotifyDecision::NeedClarification
     ));
-    assert_eq!(response, "Added to your todo list.");
+    assert!(response.contains("What should I do"));
 }

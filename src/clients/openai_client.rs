@@ -123,6 +123,21 @@ pub async fn generate_openai_prompt(
              User message: \"{user_prompt}\"",
             user_prompt = prompt
         ),
+        "todo_parser" => format!(
+            r#"You are a todo extraction engine.
+Task: From the user message below, extract:
+- "content": the core todo text with extraneous scheduling words removed. For example:
+  - "buy eggs tomorrow" -> "buy eggs"
+  - "remember to call mom at 5" -> "call mom"
+Rules:
+- Do not include dates, times, or scheduling words in content.
+- If the user includes corrections or clarifications, treat them as content changes only.
+- Output ONLY raw JSON, no prose, markdown, or code fences.
+- The JSON shape must be exactly:
+{{"content":"<string>"}}
+User message: "{user_prompt}""#,
+            user_prompt = prompt
+        ),
         "config_parser" => format!(
             r#"You are a configuration parser for a calendar event bot.
 Task: Extract a configuration change from the user message.

@@ -1,5 +1,6 @@
 use crate::clients::openai_client;
 use serenity::async_trait;
+use tokio::time::{timeout, Duration};
 
 #[async_trait]
 pub trait OpenAIClient: Send + Sync {
@@ -38,6 +39,10 @@ impl OpenAIClient for OpenAIService {
         prompt_type: &str,
         timezone: &str,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-        self.generate_prompt_internal(prompt, prompt_type, timezone).await
+        let result = timeout(Duration::from_secs(6), self.generate_prompt_internal(prompt, prompt_type, timezone)).await;
+        match result {
+            Ok(inner) => inner,
+            Err(_) => Err("OpenAI request timed out".into()),
+        }
     }
 }

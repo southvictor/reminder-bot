@@ -1,0 +1,4 @@
+{
+  "intent_router": "{\"intent\":\"config\"}",
+  "config_parser": "{\"kind\":\"timezone\",\"value\":\"America/New_York\"}"
+}

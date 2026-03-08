@@ -4,7 +4,7 @@ use crate::handlers::discord_responder::{InteractionResponder, SerenityResponder
 use crate::service::notify_flow::{route_notify, ConfigKind, ConfigUpdate, NotifyDecision, PendingSession, SessionKey};
 use crate::service::routing::IntentRouter;
 use crate::models::{config, todo};
-use memory_db::DB;
+use memory_db::{DB, save_db};
 use serde::{Deserialize, Serialize};
 use serenity::prelude::*;
 use serenity::async_trait;
@@ -30,6 +30,18 @@ use tokio::sync::Mutex;
 #[derive(Debug, Serialize)]
 pub struct ErrorMessage {
     pub error: String,
+}
+
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum TodoCheckResult {
+    MarkedComplete,
+    Skipped,
+    Expired,
+    NotFound,
+    Forbidden,
+    Invalid,
+    DbError(String),
 }
 
 #[derive(Debug, Deserialize)]
@@ -72,6 +84,18 @@ impl BotHandler {
             openai,
         }
     }
+
+    fn clone_for_todo(&self) -> Self {
+        BotHandler {
+            todo_db: self.todo_db.clone(),
+            config_db: self.config_db.clone(),
+            sessions: self.sessions.clone(),
+            router: self.router.clone(),
+            event_bus: self.event_bus.clone(),
+            openai: self.openai.clone(),
+        }
+    }
+
 }
 
 impl BotHandler {
@@ -104,9 +128,25 @@ impl BotHandler {
 
         let user_id = format!("@{}", command.user.id.to_string());
         let channel_id = command.channel_id.to_string();
-        let responder = SerenityResponder::for_command(ctx, &command);
-        self.handle_notify_with(&responder, &text, &user_id, &channel_id)
+
+        let _ = command
+            .create_response(
+                &ctx.http,
+                CreateInteractionResponse::Defer(
+                    CreateInteractionResponseMessage::new().ephemeral(true),
+                ),
+            )
             .await;
+
+        let decision = self
+            .handle_notify_internal(&text, &user_id, &channel_id)
+            .await;
+        let mut response = serenity::builder::EditInteractionResponse::new()
+            .content(Self::notify_response(&decision));
+        if let NotifyDecision::ConfirmConfig { .. } = &decision {
+            response = response.components(config_buttons());
+        }
+        let _ = command.edit_response(&ctx.http, response).await;
 
     }
 
@@ -252,23 +292,6 @@ impl BotHandler {
         }
     }
 
-    pub async fn handle_notify_with(
-        &self,
-        responder: &dyn InteractionResponder,
-        text: &str,
-        user_id: &str,
-        channel_id: &str,
-    ) -> NotifyDecision {
-        let decision = self.handle_notify_internal(text, user_id, channel_id).await;
-        if let NotifyDecision::ConfirmConfig { .. } = &decision {
-            responder
-                .reply_ephemeral_with_components(&Self::notify_response(&decision), config_buttons())
-                .await;
-            return decision;
-        }
-        responder.reply_ephemeral(&Self::notify_response(&decision)).await;
-        decision
-    }
 
     async fn handle_config_confirm(&self, ctx: &Context, interaction: serenity::all::ComponentInteraction) {
         let user_id = format!("@{}", interaction.user.id);
@@ -311,6 +334,113 @@ impl BotHandler {
         responder.reply_update("Canceled config update.").await;
     }
 
+
+    pub async fn handle_todo_check_payload(
+        &self,
+        user_id: &str,
+        action: &str,
+        todo_id: &str,
+        expires_ts: i64,
+    ) -> TodoCheckResult {
+        if Utc::now().timestamp() > expires_ts {
+            return TodoCheckResult::Expired;
+        }
+
+        let mut todo_db = self.todo_db.lock().await;
+        let Some(todo_item) = todo_db.get_mut(todo_id) else {
+            return TodoCheckResult::NotFound;
+        };
+        if todo_item.user_id != user_id {
+            return TodoCheckResult::Forbidden;
+        }
+
+        match action {
+            "done" => {
+                todo_item.completed_at = Some(Utc::now());
+                if let Err(err) = save_db(&todo::get_db_location(), &todo_db) {
+                    return TodoCheckResult::DbError(err.to_string());
+                }
+                TodoCheckResult::MarkedComplete
+            }
+            "skip" => TodoCheckResult::Skipped,
+            _ => TodoCheckResult::Invalid,
+        }
+    }
+
+    async fn handle_todo_check(&self, ctx: &Context, interaction: serenity::all::ComponentInteraction, custom_id: &str) {
+        let _ = interaction
+            .create_response(&ctx.http, CreateInteractionResponse::Acknowledge)
+            .await;
+
+        let mut parts = custom_id.split(':');
+        let _ = parts.next();
+        let action = parts.next();
+        let todo_id = parts.next();
+        let expires = parts.next();
+
+        let (action, todo_id, expires) = match (action, todo_id, expires) {
+            (Some(action), Some(todo_id), Some(expires)) => (action.to_string(), todo_id.to_string(), expires),
+            _ => {
+                let _ = interaction
+                    .create_followup(
+                        &ctx.http,
+                        serenity::builder::CreateInteractionResponseFollowup::new()
+                            .content("Invalid todo action."),
+                    )
+                    .await;
+                return;
+            }
+        };
+
+        let expires_ts = match expires.parse::<i64>() {
+            Ok(value) => value,
+            Err(_) => {
+                let _ = interaction
+                    .create_followup(
+                        &ctx.http,
+                        serenity::builder::CreateInteractionResponseFollowup::new()
+                            .content("Invalid todo action."),
+                    )
+                    .await;
+                return;
+            }
+        };
+
+        let user_id = format!("@{}", interaction.user.id);
+        let handler = self.clone_for_todo();
+        let http = ctx.http.clone();
+
+        tokio::spawn(async move {
+            let result = handler
+                .handle_todo_check_payload(&user_id, &action, &todo_id, expires_ts)
+                .await;
+            let message = match result {
+                TodoCheckResult::MarkedComplete => "Marked as complete.",
+                TodoCheckResult::Skipped => "Okay, leaving it on your list.",
+                TodoCheckResult::Expired => "This checklist has expired. Please wait for the next prompt.",
+                TodoCheckResult::NotFound => "Todo not found.",
+                TodoCheckResult::Forbidden => "That todo does not belong to you.",
+                TodoCheckResult::Invalid => "Invalid todo action.",
+                TodoCheckResult::DbError(err) => {
+                    let _ = interaction
+                        .create_followup(
+                            &http,
+                            serenity::builder::CreateInteractionResponseFollowup::new()
+                                .content(format!("Failed to update todo: {}", err)),
+                        )
+                        .await;
+                    return;
+                }
+            };
+            let _ = interaction
+                .create_followup(
+                    &http,
+                    serenity::builder::CreateInteractionResponseFollowup::new()
+                        .content(message),
+                )
+                .await;
+        });
+    }
     async fn handle_pending_confirm(
         &self,
         ctx: &Context,
@@ -410,6 +540,10 @@ impl EventHandler for BotHandler {
             }
             DiscordInteraction::Component(component) => {
                 let custom_id = component.data.custom_id.clone();
+                if custom_id.starts_with("todo_check:") {
+                    self.handle_todo_check(&ctx, component, &custom_id).await;
+                    return;
+                }
                 if let Some((action, pending_id)) = custom_id.split_once(':') {
                     match action {
                         "action_confirm" => {

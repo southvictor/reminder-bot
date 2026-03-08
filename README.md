@@ -2,9 +2,8 @@
 NotificationBot
 ===============
 
-- Deploy reconciliation loop
-- Add notification listener to service for reading from discord
-- add a goal tracker
+- add a way to list todos
+- add a way to mark todos as done
 
 Architecture
 ------------
@@ -116,17 +115,5 @@ Required Permissions for channel.
 - applications.commands
 - Send messages
 - View Channels
-
-Configuration
--------------
-The app reads configuration from `./config.properties` by default. You can override the path with the `CONFIG_FILE` environment variable.
-
-Example `config.properties`:
-```
-DISCORD_CLIENT_SECRET=your-discord-bot-token
-OPENAI_API_KEY=your-openai-api-key
-DB_LOCATION=./data
-RUN_MODE=api
-```
 
 Set DISCORD_CLIENT_SECRET to the discord app's bot token.

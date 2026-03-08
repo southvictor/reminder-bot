@@ -5,12 +5,6 @@ use serenity::prelude::Context;
 
 #[async_trait]
 pub trait InteractionResponder: Send + Sync {
-    async fn reply_ephemeral(&self, content: &str);
-    async fn reply_ephemeral_with_components(
-        &self,
-        content: &str,
-        components: Vec<serenity::builder::CreateActionRow>,
-    );
     async fn reply_update(&self, content: &str);
     async fn show_modal(&self, modal: CreateModal);
 }
@@ -22,14 +16,6 @@ pub struct SerenityResponder<'a> {
 }
 
 impl<'a> SerenityResponder<'a> {
-    pub fn for_command(ctx: &'a Context, command: &'a CommandInteraction) -> Self {
-        Self {
-            ctx,
-            command: Some(command),
-            component: None,
-        }
-    }
-
     pub fn for_component(ctx: &'a Context, component: &'a ComponentInteraction) -> Self {
         Self {
             ctx,
@@ -41,40 +27,7 @@ impl<'a> SerenityResponder<'a> {
 
 #[async_trait]
 impl InteractionResponder for SerenityResponder<'_> {
-    async fn reply_ephemeral(&self, content: &str) {
-        let response = CreateInteractionResponse::Message(
-            CreateInteractionResponseMessage::new()
-                .content(content)
-                .ephemeral(true),
-        );
-        if let Some(command) = self.command {
-            let _ = command.create_response(&self.ctx.http, response).await;
-            return;
-        }
-        if let Some(component) = self.component {
-            let _ = component.create_response(&self.ctx.http, response).await;
-        }
-    }
 
-    async fn reply_ephemeral_with_components(
-        &self,
-        content: &str,
-        components: Vec<serenity::builder::CreateActionRow>,
-    ) {
-        let response = CreateInteractionResponse::Message(
-            CreateInteractionResponseMessage::new()
-                .content(content)
-                .components(components)
-                .ephemeral(true),
-        );
-        if let Some(command) = self.command {
-            let _ = command.create_response(&self.ctx.http, response).await;
-            return;
-        }
-        if let Some(component) = self.component {
-            let _ = component.create_response(&self.ctx.http, response).await;
-        }
-    }
 
 
     async fn reply_update(&self, content: &str) {

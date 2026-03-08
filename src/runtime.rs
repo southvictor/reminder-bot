@@ -44,10 +44,11 @@ pub async fn run_api(
     });
     task_runner.add_task({
         let todo_db = shared_todo_db.clone();
+        let config_db = shared_config_db.clone();
         let secret = discord_client_secret_arc.clone();
         move || {
             tokio::spawn(async move {
-                todo_loop::run_todo_loop(todo_db, secret).await;
+                todo_loop::run_todo_loop(todo_db, config_db, secret).await;
             });
         }
     });

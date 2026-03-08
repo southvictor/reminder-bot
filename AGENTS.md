@@ -7,3 +7,5 @@ The main logic is in a state machine that is entered via discord prompt. After t
 There are also several scheduled tasks to perform background work.
 
 When asking the user for more information, its best to give them a simple yes/no or multiple choice decision rather than making them enter a new command.
+
+Always run cargo test after any change and don't consider any change complete until it passes.

@@ -1,0 +1,4 @@
+{
+  "intent_router": "{\"intent\":\"calendar_event\"}",
+  "calendar_event_parser": "{\"content\":\"call mom\",\"time\":\"2026-02-03T12:00:00Z\"}"
+}
